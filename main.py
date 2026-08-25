@@ -43,6 +43,8 @@ def main() -> int:
     ap.add_argument("--keywords", default="", help="額外關鍵字，逗號分隔")
     ap.add_argument("--official-url", default="",
                     help="公司官網網址，會一併抓官網最新消息")
+    ap.add_argument("--priority-boost", type=int, default=180,
+                    help="優先來源的新鮮度加權天數（預設 180；設 0 = 純依日期，不分來源）")
     ap.add_argument("--priority-domains", default="",
                     help="第一優先來源網域，逗號分隔；預設 money.udn.com,ctee.com.tw,news.cnyes.com")
     ap.add_argument("--years", type=float, default=2.0, help="蒐集近幾年（預設 2）")
@@ -78,6 +80,8 @@ def main() -> int:
             args.company, extra_keywords=extra, years=args.years,
             max_articles=args.max, use_cnyes=not args.no_cnyes,
             official_url=args.official_url, priority_domains=doms,
+            priority_boost_days={1: args.priority_boost,
+                                 2: args.priority_boost // 3, 3: 0},
             progress=_progress, delay=args.delay)
 
     if not arts:

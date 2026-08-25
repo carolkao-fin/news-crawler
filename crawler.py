@@ -287,6 +287,24 @@ def source_tier(article: "Article", official_hosts: Optional[Iterable[str]] = No
     return 3
 
 
+# 優先來源的「新鮮度加權」天數：第一優先等於自動年輕 180 天，第二優先 60 天。
+# 用加權而非硬性分層，優先來源會排前面，但不會把其他媒體整批擠掉。
+TIER_BOOST_DAYS = {1: 180, 2: 60, 3: 0}
+
+
+def rank_score(article: "Article", now: datetime,
+               official_hosts: Optional[Iterable[str]] = None,
+               boost_days: Optional[dict] = None) -> float:
+    """分數越小越前面：以「幾天前」為基準，優先來源扣天數，標題沒命中關鍵字加罰。"""
+    boost = boost_days or TIER_BOOST_DAYS
+    days = ((now - article.published).days
+            if article.published else 3650)      # 沒日期的排最後
+    days -= boost.get(source_tier(article, official_hosts), 0)
+    if not article.matched:
+        days += 365
+    return days
+
+
 GNEWS_RSS = "https://news.google.com/rss/search"
 
 
@@ -726,13 +744,31 @@ def fetch_article_body(article: Article, fetcher: Optional[Fetcher] = None) -> A
 # 主流程
 # --------------------------------------------------------------------------- #
 def _dedup(articles: List[Article]) -> List[Article]:
-    seen_t, seen_u, out = set(), set(), []
+    """去重：同網址、同標題，以及「一則標題是另一則的前綴」的同稿異版。
+
+    同一則新聞常同時出現在媒體與公司官網，標題可能只差幾個字（例如結尾多了
+    「領域」兩字），純比對前 40 字會漏掉，因此再做一次前綴包含檢查。
+    """
+    seen_u: set = set()
+    keys: List[str] = []
+    out: List[Article] = []
     for a in articles:
-        kt = _norm(a.title)[:40]
+        kt = _norm(a.title)
         ku = re.sub(r"[?#].*$", "", a.url or "")
-        if not kt or kt in seen_t or (ku and ku in seen_u):
+        if not kt or (ku and ku in seen_u):
             continue
-        seen_t.add(kt)
+        dup = False
+        for k in keys:
+            if k == kt:
+                dup = True
+                break
+            short, long = (k, kt) if len(k) <= len(kt) else (kt, k)
+            if len(short) >= 12 and long.startswith(short):
+                dup = True
+                break
+        if dup:
+            continue
+        keys.append(kt)
         if ku:
             seen_u.add(ku)
         out.append(a)
@@ -749,19 +785,22 @@ def collect_news(company: str,
                  use_cnyes: bool = True,
                  official_url: str = "",
                  priority_domains: Optional[Iterable[str]] = None,
+                 priority_boost_days: Optional[dict] = None,
                  min_chars: int = 80,
                  progress: Optional[Callable[[str, float], None]] = None,
                  delay: float = 0.8) -> tuple[List[Article], List[str]]:
     """蒐集某公司近 N 年新聞。回傳 (成功清單, 使用的關鍵字)。
 
-    來源優先序依「新聞來源彙整.xlsx」的實際使用統計：
-    經濟日報、工商時報、鉅亨網、公司官網為第一優先（另做定向檢索），
-    其餘媒體照樣蒐集，只是排在後面。
+    **不限來源**：任何 Google News 收錄的媒體都會蒐集。依「新聞來源彙整.xlsx」的
+    實際使用統計，經濟日報、工商時報、鉅亨網、公司官網為第一優先——除全網檢索外
+    另做定向檢索，並在排序時享有 180 天的新鮮度加權（第二優先 60 天）。這是加權
+    不是門檻，其他媒體只要夠新、夠相關一樣會排進來。
     """
     until = until or datetime.now()
     since = since or (until - timedelta(days=int(365.25 * years)))
     keywords = make_keywords(company, extra_keywords)
     doms = list(priority_domains) if priority_domains is not None else list(PRIORITY_DOMAINS)
+    boost = priority_boost_days or TIER_BOOST_DAYS
     f = Fetcher(delay=delay)
 
     def say(msg: str, pct: float) -> None:
@@ -830,10 +869,8 @@ def collect_news(company: str,
         cand.append(a)
 
     cand = _dedup(cand)
-    # 排序：官網／經濟日報／工商時報／鉅亨網 優先，其次標題命中關鍵字，再依日期新到舊
-    cand.sort(key=lambda x: (source_tier(x, official_hosts),
-                             len(x.matched) == 0,
-                             -(x.published.timestamp() if x.published else 0)))
+    # 排序：不限來源，但第一／第二優先來源享有新鮮度加權，因此同期新聞會排在前面
+    cand.sort(key=lambda x: rank_score(x, until, official_hosts, boost))
     cand = cand[: max(max_articles * 3, max_articles)]
     say("初步取得 %d 篇候選新聞" % len(cand), 0.22)
 

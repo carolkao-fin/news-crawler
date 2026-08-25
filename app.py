@@ -72,7 +72,10 @@ with st.sidebar:
                                "chinatimes.com": "中時新聞網",
                                "technews.tw": "科技新報",
                                "cna.com.tw": "中央社"}.get(d, d),
-        help="這些來源會額外做一次定向檢索，並在結果中排前面；其他媒體仍照常蒐集。")
+        help="這些來源會額外做一次定向檢索，並在排序時加權；其他媒體仍照常蒐集。")
+    boost = st.slider("優先來源加權（天）", 0, 365, 180, 15,
+                      help="不是門檻而是加權：第一優先來源等於自動年輕這麼多天，"
+                           "第二優先為其 1/3。設 0 就純依日期排序、完全不分來源。")
     delay = st.slider("請求間隔（秒）", 0.3, 3.0, 0.8, 0.1,
                       help="間隔越長越不容易被來源網站擋，但速度較慢。")
 
@@ -108,7 +111,9 @@ if run:
             extra_keywords=[k.strip() for k in extra.split(",") if k.strip()],
             years=float(years), max_articles=int(max_articles),
             use_cnyes=use_cnyes, official_url=official_url.strip(),
-            priority_domains=prio, progress=_cb, delay=float(delay))
+            priority_domains=prio,
+            priority_boost_days={1: int(boost), 2: int(boost) // 3, 3: 0},
+            progress=_cb, delay=float(delay))
     bar.empty()
     st.session_state.articles = arts
     st.session_state.keywords = kws
