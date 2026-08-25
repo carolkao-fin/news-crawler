@@ -1,0 +1,866 @@
+# -*- coding: utf-8 -*-
+"""
+新聞蒐集核心模組
+================
+
+輸入目標公司名稱 -> 自動展開關鍵字 -> 多來源蒐集新聞 -> 解析全文 -> 回傳 Article 清單。
+
+來源
+----
+1. Google News RSS  (news.google.com)  ── 涵蓋面最廣，含經濟日報、工商時報、自由財經、
+   Yahoo、鉅亨、TechNews 等；RSS 連結為 Google 轉址，本模組會還原成原始網址。
+2. 鉅亨網 cnyes 搜尋 API              ── 補強財經類新聞，且可直接取得全文。
+
+所有網路請求皆為公開頁面的一般讀取，並內建節流（預設每次請求間隔 0.8 秒）。
+"""
+
+from __future__ import annotations
+
+import html as _html
+import json
+import re
+import time
+import unicodedata
+import urllib.parse
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Iterable, List, Optional
+
+import feedparser
+import requests
+from bs4 import BeautifulSoup
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+HEADERS = {"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
+
+TPE = timezone(timedelta(hours=8))
+
+# 常見公司名稱後綴／地區前綴，用來裁出「核心字號」
+_SUFFIXES = [
+    "股份有限公司", "有限公司", "公司", "企業社", "工業社",
+    "股份有限公司台灣分公司", "台灣分公司", "臺灣分公司", "分公司",
+]
+_PREFIXES = [
+    "台灣", "臺灣", "香港商", "新加坡商", "薩摩亞商", "大陸商", "美商", "日商",
+    "英屬維京群島商", "英商", "德商", "法商", "荷商", "韓商", "開曼群島商",
+]
+
+
+# --------------------------------------------------------------------------- #
+# 資料結構
+# --------------------------------------------------------------------------- #
+@dataclass
+class Article:
+    title: str
+    url: str = ""
+    source: str = ""                     # 新聞來源（媒體名稱）
+    published: Optional[datetime] = None
+    author: str = ""                     # 記者
+    subtitle: str = ""                   # 副標
+    paragraphs: List[str] = field(default_factory=list)   # 內文段落
+    origin: str = ""                     # 由哪個來源蒐集到（google / cnyes）
+    matched: List[str] = field(default_factory=list)      # 命中的關鍵字
+    fetch_error: str = ""
+
+    @property
+    def date_str(self) -> str:
+        return self.published.strftime("%Y-%m-%d") if self.published else ""
+
+    @property
+    def body(self) -> str:
+        return "\n".join(self.paragraphs)
+
+    @property
+    def char_count(self) -> int:
+        return sum(len(p) for p in self.paragraphs)
+
+    def to_dict(self) -> dict:
+        return {
+            "title": self.title,
+            "url": self.url,
+            "source": self.source,
+            "published": self.date_str,
+            "author": self.author,
+            "subtitle": self.subtitle,
+            "paragraphs": self.paragraphs,
+            "origin": self.origin,
+            "matched": self.matched,
+            "fetch_error": self.fetch_error,
+        }
+
+
+# --------------------------------------------------------------------------- #
+# 關鍵字展開
+# --------------------------------------------------------------------------- #
+def make_keywords(company: str, extra: Optional[Iterable[str]] = None) -> List[str]:
+    """由公司全名展開檢索關鍵字。
+
+    例：「台灣禾邦電子有限公司」-> ['台灣禾邦電子有限公司', '台灣禾邦電子', '禾邦電子', '禾邦']
+    """
+    name = (company or "").strip()
+    out: List[str] = []
+
+    def push(s: str) -> None:
+        s = s.strip()
+        if len(s) >= 2 and s not in out:
+            out.append(s)
+
+    push(name)
+
+    core = name
+    for suf in sorted(_SUFFIXES, key=len, reverse=True):
+        if core.endswith(suf):
+            core = core[: -len(suf)]
+            break
+    push(core)
+
+    stripped = core
+    for pre in sorted(_PREFIXES, key=len, reverse=True):
+        if stripped.startswith(pre):
+            stripped = stripped[len(pre):]
+            break
+    push(stripped)
+
+    # 再去掉「電子／科技／半導體／國際／實業…」等泛用尾字，取字號
+    for tail in ["電子", "科技", "半導體", "國際", "實業", "工業", "生技",
+                 "光電", "材料", "資訊", "投資", "開發", "控股", "精密", "化學"]:
+        if stripped.endswith(tail) and len(stripped) - len(tail) >= 2:
+            push(stripped[: -len(tail)])
+            break
+
+    for e in (extra or []):
+        push(e)
+
+    return out
+
+
+_COLUMN_TAIL = re.compile(r"\s*[-|｜–—]\s*[^-|｜–—]{1,6}$")
+
+
+def clean_title(title: str, source: str = "") -> str:
+    """清掉 Google News 標題尾端的媒體名與版面欄目，例如「…優選- 日報」。"""
+    t = (title or "").strip()
+    if source and t.endswith(source):
+        t = _COLUMN_TAIL.sub("", t).strip()
+    for _ in range(2):
+        m = _COLUMN_TAIL.search(t)
+        if not m:
+            break
+        tail = m.group(0).lstrip(" -|｜–—").strip()
+        if tail in {"日報", "商情", "財經", "產業", "焦點", "要聞", "生活", "頭條",
+                    "股市", "科技", "證券", "國際", "兩岸", "地方", "工商時報",
+                    "經濟日報", "自由時報", "中時新聞網", "聯合新聞網", "鉅亨網",
+                    "Yahoo奇摩股市", "MoneyDJ理財網"} or tail == source:
+            t = t[: m.start()].strip()
+        else:
+            break
+    return t
+
+
+def _norm(s: str) -> str:
+    s = unicodedata.normalize("NFKC", s or "")
+    return re.sub(r"\s+", "", s).lower()
+
+
+def match_keywords(text: str, keywords: Iterable[str]) -> List[str]:
+    t = _norm(text)
+    return [k for k in keywords if _norm(k) and _norm(k) in t]
+
+
+# --------------------------------------------------------------------------- #
+# HTTP
+# --------------------------------------------------------------------------- #
+class Fetcher:
+    """帶節流與重試的 HTTP 取用器。"""
+
+    def __init__(self, delay: float = 0.8, timeout: int = 25, retries: int = 2):
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
+        self.delay = delay
+        self.timeout = timeout
+        self.retries = retries
+        self._last = 0.0
+
+    def _wait(self) -> None:
+        gap = time.time() - self._last
+        if gap < self.delay:
+            time.sleep(self.delay - gap)
+        self._last = time.time()
+
+    def get(self, url: str, **kw) -> requests.Response:
+        last_err: Optional[Exception] = None
+        for i in range(self.retries + 1):
+            self._wait()
+            try:
+                r = self.session.get(url, timeout=self.timeout, **kw)
+                r.raise_for_status()
+                return r
+            except Exception as e:      # noqa: BLE001
+                last_err = e
+                time.sleep(0.6 * (i + 1))
+        raise last_err  # type: ignore[misc]
+
+    def post(self, url: str, **kw) -> requests.Response:
+        self._wait()
+        r = self.session.post(url, timeout=self.timeout, **kw)
+        r.raise_for_status()
+        return r
+
+
+# --------------------------------------------------------------------------- #
+# Google News
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 來源清單與分級（依「新聞來源彙整.xlsx」實際使用統計）
+# --------------------------------------------------------------------------- #
+# 網域 -> 正式媒體名稱，讓輸出的來源標示與既有報告一致
+DOMAIN_SOURCE = {
+    "money.udn.com": "經濟日報",
+    "udn.com": "聯合報",
+    "ctee.com.tw": "工商時報",
+    "news.cnyes.com": "鉅亨網",
+    "cnyes.com": "鉅亨網",
+    "moneydj.com": "MoneyDJ",
+    "ltn.com.tw": "自由時報",
+    "chinatimes.com": "中時新聞網",
+    "cna.com.tw": "中央社",
+    "technews.tw": "科技新報",
+    "digitimes.com.tw": "DIGITIMES",
+    "wealth.com.tw": "財訊",
+    "businesstoday.com.tw": "今周刊",
+    "businessweekly.com.tw": "商業周刊",
+    "cmoney.tw": "CMoney",
+    "investing.com": "Investing.com",
+    "ithome.com.tw": "iThome",
+    "bnext.com.tw": "數位時代",
+    "gvm.com.tw": "遠見雜誌",
+    "ctwant.com": "CTWANT",
+    "setn.com": "三立新聞網",
+    "ebc.net.tw": "東森新聞",
+    "nownews.com": "NOWnews",
+    "tvbs.com.tw": "TVBS新聞網",
+    "mirrormedia.mg": "鏡週刊",
+    "rti.org.tw": "中央廣播電臺",
+    "sina.com.cn": "新浪財經",
+    "sina.com.tw": "新浪財經",
+    "eastmoney.com": "東方財富網",
+    "stcn.com": "證券時報網",
+    "zqrb.cn": "證券日報網",
+    "yahoo.com": "Yahoo奇摩股市",
+    "mops.twse.com.tw": "公開資訊觀測站",
+    "twse.com.tw": "臺灣證券交易所",
+    "tpex.org.tw": "證券櫃檯買賣中心",
+}
+
+# 第一優先來源：定向補搜，並在排序時優先納入
+PRIORITY_DOMAINS = ["money.udn.com", "ctee.com.tw", "news.cnyes.com"]
+PRIORITY_NAMES = ["經濟日報", "工商時報", "鉅亨網", "公司官網"]
+
+# 第二優先：既有報告中經常出現的台灣財經／科技媒體
+SECOND_NAMES = ["MoneyDJ", "自由時報", "聯合報", "中央社", "科技新報", "DIGITIMES",
+                "財訊", "今周刊", "商業周刊", "CMoney", "中時新聞網", "數位時代",
+                "iThome", "遠見雜誌", "公開資訊觀測站", "Investing.com"]
+
+
+def normalize_source(url: str, fallback: str = "") -> str:
+    """由網域判定正式媒體名稱；判不出來就沿用 Google News 給的名稱。"""
+    host = urllib.parse.urlparse(url or "").netloc.lower()
+    for dom, name in DOMAIN_SOURCE.items():
+        if host.endswith(dom) or dom in host:
+            return name
+    return fallback or host
+
+
+def source_tier(article: "Article", official_hosts: Optional[Iterable[str]] = None) -> int:
+    """1 = 經濟日報／工商時報／鉅亨網／官網，2 = 常用財經媒體，3 = 其他。"""
+    host = urllib.parse.urlparse(article.url or "").netloc.lower()
+    for oh in (official_hosts or []):
+        if oh and oh.lower().lstrip("www.") in host:
+            return 1
+    if article.origin == "official" or article.source.endswith("官網"):
+        return 1
+    if article.source in PRIORITY_NAMES:
+        return 1
+    if article.source in SECOND_NAMES:
+        return 2
+    return 3
+
+
+GNEWS_RSS = "https://news.google.com/rss/search"
+
+
+def _gnews_query(keywords: List[str], since: datetime, until: datetime,
+                 site: str = "") -> str:
+    kw = " OR ".join('"%s"' % k for k in keywords)
+    q = "(%s)" % kw
+    if site:
+        q += " site:%s" % site
+    return "%s after:%s before:%s" % (
+        q, since.strftime("%Y-%m-%d"), (until + timedelta(days=1)).strftime("%Y-%m-%d"))
+
+
+def search_google_news(keywords: List[str], since: datetime, until: datetime,
+                       fetcher: Optional[Fetcher] = None,
+                       hl: str = "zh-TW", gl: str = "TW",
+                       ceid: str = "TW:zh-Hant", site: str = "") -> List[Article]:
+    f = fetcher or Fetcher()
+    q = _gnews_query(keywords, since, until, site)
+    url = "%s?q=%s&hl=%s&gl=%s&ceid=%s" % (
+        GNEWS_RSS, urllib.parse.quote(q), hl, gl, urllib.parse.quote(ceid))
+    resp = f.get(url)
+    feed = feedparser.parse(resp.text)
+
+    out: List[Article] = []
+    for e in feed.entries:
+        title = _html.unescape(e.get("title", "")).strip()
+        src = ""
+        if isinstance(e.get("source"), dict):
+            src = e["source"].get("title", "")
+        # Google 會在標題尾端附上「 - 媒體名」，移除之
+        if src and title.endswith(" - " + src):
+            title = title[: -(len(src) + 3)].strip()
+
+        pub = None
+        if e.get("published_parsed"):
+            pub = (datetime(*e.published_parsed[:6], tzinfo=timezone.utc)
+                   .astimezone(TPE).replace(tzinfo=None))
+
+        out.append(Article(title=clean_title(title, src), url=e.get("link", ""),
+                           source=src, published=pub,
+                           origin="google-site" if site else "google"))
+    return out
+
+
+def resolve_google_url(gnews_url: str, fetcher: Optional[Fetcher] = None) -> str:
+    """把 news.google.com/rss/articles/... 還原成原始新聞網址。
+
+    作法：讀取該頁的 c-wiz 簽章（data-n-a-id / ts / sg），再呼叫 Google 內部的
+    batchexecute (garturlreq) 取回真實網址。失敗時回傳原網址。
+    """
+    if "news.google.com" not in gnews_url:
+        return gnews_url
+    f = fetcher or Fetcher()
+    try:
+        page = f.get(gnews_url).text
+        m = re.search(r'data-n-a-id="([^"]+)"', page)
+        aid = m.group(1) if m else None
+        m = re.search(r'data-n-a-ts="(\d+)"', page)
+        ts = int(m.group(1)) if m else None
+        m = re.search(r'data-n-a-sg="([^"]+)"', page)
+        sg = m.group(1) if m else None
+        if not aid:
+            # 舊版 RSS 連結的 base64 段落即是 id
+            m = re.search(r"/articles/([^?]+)", gnews_url)
+            aid = m.group(1) if m else None
+        if not (aid and ts and sg):
+            return gnews_url
+
+        inner = json.dumps([
+            "garturlreq",
+            [["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None, 1,
+              None, None, None, None, None, 0, 1],
+             "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0],
+            aid, ts, sg])
+        body = {"f.req": json.dumps([[["Fbv4je", inner]]])}
+        r = f.post("https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                   data=body,
+                   headers={"Content-Type":
+                            "application/x-www-form-urlencoded;charset=UTF-8"})
+        m = re.search(r'garturlres.{0,10}(https?://[^"\\\s]+)', r.text)
+        if m:
+            return m.group(1)
+    except Exception:      # noqa: BLE001
+        pass
+    return gnews_url
+
+
+# --------------------------------------------------------------------------- #
+# 鉅亨網 cnyes
+# --------------------------------------------------------------------------- #
+CNYES_SEARCH = "https://api.cnyes.com/media/api/v1/search/news"
+CNYES_DETAIL = "https://api.cnyes.com/media/api/v1/news/%s"
+
+
+def search_cnyes(keyword: str, since: datetime, until: datetime,
+                 fetcher: Optional[Fetcher] = None, pages: int = 2) -> List[Article]:
+    f = fetcher or Fetcher()
+    out: List[Article] = []
+    for page in range(1, pages + 1):
+        try:
+            r = f.get(CNYES_SEARCH, params={"q": keyword, "limit": 30, "page": page})
+            data = r.json().get("items", {})
+        except Exception:      # noqa: BLE001
+            break
+        rows = data.get("data") or []
+        if not rows:
+            break
+        for it in rows:
+            ts = it.get("publishAt")
+            pub = (datetime.fromtimestamp(ts, TPE).replace(tzinfo=None)
+                   if ts else None)
+            if pub and not (since <= pub <= until):
+                continue
+            nid = it.get("newsId")
+            out.append(Article(
+                title=_html.unescape(it.get("title", "")).strip(),
+                url="https://news.cnyes.com/news/id/%s" % nid,
+                source="鉅亨網",
+                published=pub,
+                origin="cnyes",
+            ))
+        if page >= (data.get("last_page") or 1):
+            break
+    return out
+
+
+def fetch_cnyes_body(article: Article, fetcher: Optional[Fetcher] = None) -> bool:
+    m = re.search(r"/id/(\d+)", article.url)
+    if not m:
+        return False
+    f = fetcher or Fetcher()
+    try:
+        r = f.get(CNYES_DETAIL % m.group(1))
+        item = r.json().get("items", {})
+        soup = BeautifulSoup(item.get("content", ""), "html.parser")
+        paras = [p.get_text(" ", strip=True) for p in soup.find_all(["p", "h2", "h3"])]
+        article.paragraphs = [p for p in paras if len(p) >= 12]
+        return bool(article.paragraphs)
+    except Exception:      # noqa: BLE001
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# 公司官網
+# --------------------------------------------------------------------------- #
+_NEWS_NAV = re.compile(
+    r"(新聞|最新消息|消息|公告|媒體|報導|訊息|動態|news|press|media|release)", re.I)
+_DATE_IN_TEXT = re.compile(
+    r"(20\d{2})[./年-]\s?(\d{1,2})[./月-]\s?(\d{1,2})")
+
+
+def _abs(base: str, href: str) -> str:
+    return urllib.parse.urljoin(base, href)
+
+
+def find_official_news_pages(base_url: str, fetcher: Optional[Fetcher] = None,
+                             limit: int = 5) -> List[str]:
+    """從官網首頁找出「最新消息／新聞中心」之類的列表頁。"""
+    f = fetcher or Fetcher()
+    try:
+        r = f.get(base_url)
+    except Exception:      # noqa: BLE001
+        return []
+    host = urllib.parse.urlparse(r.url).netloc
+    soup = BeautifulSoup(r.text, "html.parser")
+    pages, seen = [], set()
+    for a in soup.find_all("a", href=True):
+        href = str(a["href"])
+        text = a.get_text(" ", strip=True)
+        if not (_NEWS_NAV.search(text) or _NEWS_NAV.search(href)):
+            continue
+        url = _abs(r.url, href)
+        if urllib.parse.urlparse(url).netloc != host:
+            continue
+        if url in seen or url.rstrip("/") == r.url.rstrip("/"):
+            continue
+        seen.add(url)
+        pages.append(url)
+        if len(pages) >= limit:
+            break
+    return pages
+
+
+def search_official_site(base_url: str, company: str,
+                         since: datetime, until: datetime,
+                         fetcher: Optional[Fetcher] = None,
+                         max_items: int = 12) -> List[Article]:
+    """抓公司官網的新聞／最新消息列表，回傳候選 Article（尚未取全文）。"""
+    if not base_url:
+        return []
+    if not base_url.startswith("http"):
+        base_url = "https://" + base_url
+    f = fetcher or Fetcher()
+    label = "%s官網" % (company or urllib.parse.urlparse(base_url).netloc)
+
+    pages = [base_url] + find_official_news_pages(base_url, f)
+    out: List[Article] = []
+    seen = set()
+    for page in pages:
+        try:
+            r = f.get(page)
+        except Exception:      # noqa: BLE001
+            continue
+        host = urllib.parse.urlparse(r.url).netloc
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a", href=True):
+            text = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+            if len(text) < 8 or len(text) > 80:
+                continue
+            url = urllib.parse.urldefrag(_abs(r.url, str(a["href"]))).url
+            page_url = urllib.parse.urldefrag(r.url).url
+            if urllib.parse.urlparse(url).netloc != host or url in seen:
+                continue
+            if url.rstrip("/") == page_url.rstrip("/"):
+                continue
+
+            # 日期：先看連結文字與周邊，再看網址
+            ctx = text
+            parent = a.find_parent(["li", "div", "tr", "article"])
+            if parent is not None:
+                ctx = re.sub(r"\s+", " ", parent.get_text(" ", strip=True))[:120]
+            m = _DATE_IN_TEXT.search(ctx) or _DATE_IN_TEXT.search(url)
+            pub = None
+            if m:
+                try:
+                    pub = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                except ValueError:
+                    pub = None
+            if pub and not (since <= pub <= until):
+                continue
+            if not pub and not re.search(r"(news|press|release|detail|article|\d{4})",
+                                         url, re.I):
+                continue
+
+            seen.add(url)
+            title = _DATE_IN_TEXT.sub("", text).strip(" .-|｜")
+            out.append(Article(title=title or text, url=url, source=label,
+                               published=pub, origin="official"))
+            if len(out) >= max_items:
+                break
+        if len(out) >= max_items:
+            break
+
+    # 官網新聞列表通常都有日期；若已有足夠帶日期的項目，就丟掉沒日期的導覽連結
+    dated = [a for a in out if a.published]
+    return dated if len(dated) >= 3 else out
+
+
+# --------------------------------------------------------------------------- #
+# 全文擷取
+# --------------------------------------------------------------------------- #
+_SITE_SELECTORS = [
+    ("money.udn.com", "#article_body"),
+    ("udn.com", "section.article-content__editor"),
+    ("ctee.com.tw", "div.entry-content"),
+    ("news.cnyes.com", "main"),
+    ("technews.tw", "div.indent"),
+    ("ltn.com.tw", "div.text"),
+    ("chinatimes.com", "div.article-body"),
+    ("news.tvbs.com.tw", "div.article_content"),
+    ("ettoday.net", "div.story"),
+    ("setn.com", "div#Content1"),
+    ("moneydj.com", "#MainContent"),
+    ("digitimes.com.tw", "div.article-content"),
+    ("bnext.com.tw", "div.article-content"),
+    ("wealth.com.tw", "div.article-content"),
+    ("cw.com.tw", "div.article-content"),
+    ("gvm.com.tw", "div.article-content"),
+    ("yahoo.com", "div.caas-body"),
+    ("nownews.com", "div.article-content"),
+    ("news.pts.org.tw", "div.post-article"),
+    ("rti.org.tw", "div.article-content"),
+]
+
+_DROP_PAT = re.compile(
+    r"(延伸閱讀|更多.{0,6}報導|相關新聞|不用抽|不用搶|立即下載|加入.{0,4}粉絲團|"
+    r"責任編輯|本文.{0,8}授權|原文出處|訂閱|廣告|Advertisement|留言|分享至|"
+    r"剪貼簿|複製到|請點擊|看更多|熱門推薦|推薦閱讀|你可能也想看|字級設定|"
+    r"版權所有|未經授權|免責聲明|投資有風險)")
+
+
+def _trim_tail_noise(paras: List[str], max_drop: int = 6) -> List[str]:
+    """砍掉文末的「推薦新聞」標題列：連續數則短句、無標點者視為連結清單。"""
+    out = list(paras)
+    dropped = 0
+    while out and dropped < max_drop:
+        last = out[-1]
+        if len(last) <= 34 and not re.search(r"[。；]", last):
+            out.pop()
+            dropped += 1
+        else:
+            break
+    return out
+
+
+def _from_jsonld(soup: BeautifulSoup) -> tuple[str, str, str, str]:
+    """回傳 (articleBody, headline, datePublished, author)。"""
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or "{}")
+        except Exception:      # noqa: BLE001
+            continue
+        cands = data if isinstance(data, list) else [data]
+        if isinstance(data, dict) and "@graph" in data:
+            cands = data["@graph"]
+        for d in cands:
+            if not isinstance(d, dict):
+                continue
+            t = d.get("@type", "")
+            types = t if isinstance(t, list) else [t]
+            if not any(str(x).endswith(("Article", "NewsArticle", "BlogPosting"))
+                       for x in types):
+                continue
+            author = d.get("author")
+            if isinstance(author, dict):
+                author = author.get("name", "")
+            elif isinstance(author, list) and author:
+                a0 = author[0]
+                author = a0.get("name", "") if isinstance(a0, dict) else str(a0)
+            return (str(d.get("articleBody", "") or ""),
+                    str(d.get("headline", "") or ""),
+                    str(d.get("datePublished", "") or ""),
+                    str(author or ""))
+    return "", "", "", ""
+
+
+# 出現以下字樣即代表正文結束，其後多為推薦新聞、免責聲明
+_END_PAT = re.compile(
+    r"(延伸閱讀|更多.{0,10}報導|相關新聞|相關報導|責任編輯|原文出處|看更多|"
+    r"你可能也想看|熱門推薦|推薦閱讀|更多內容|免責聲明|未經授權|版權所有|"
+    r"本資料僅供參考|投資人應獨立判斷|不代表本網立場|加入.{0,4}粉絲團)")
+
+
+def _paragraphs_from(node) -> List[str]:
+    paras: List[str] = []
+    for el in node.find_all(["p", "h2", "h3", "h4"]):
+        txt = el.get_text(" ", strip=True)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if not txt:
+            continue
+        if _END_PAT.search(txt) and len(paras) >= 2:
+            break                      # 正文到此為止
+        if len(txt) < 12 or _DROP_PAT.search(txt):
+            continue
+        if paras and txt == paras[-1]:
+            continue
+        paras.append(txt)
+    return paras
+
+
+def _densest_block(soup: BeautifulSoup) -> List[str]:
+    best, best_len = None, 0
+    for node in soup.find_all(["article", "div", "section", "main"]):
+        ps = node.find_all("p", recursive=True)
+        if len(ps) < 3:
+            continue
+        length = sum(len(p.get_text(strip=True)) for p in ps)
+        if length > best_len:
+            best, best_len = node, length
+    return _paragraphs_from(best) if best is not None else []
+
+
+def _parse_dt(s: str) -> Optional[datetime]:
+    if not s:
+        return None
+    s = s.strip()
+    for pat, fmt in [
+        (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", "%Y-%m-%dT%H:%M:%S"),
+        (r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", "%Y-%m-%d %H:%M:%S"),
+        (r"\d{4}-\d{2}-\d{2}", "%Y-%m-%d"),
+        (r"\d{4}/\d{2}/\d{2}", "%Y/%m/%d"),
+    ]:
+        m = re.search(pat, s)
+        if m:
+            try:
+                return datetime.strptime(m.group(0), fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def fetch_article_body(article: Article, fetcher: Optional[Fetcher] = None) -> Article:
+    """抓取並解析單篇新聞全文，就地寫回 article。"""
+    f = fetcher or Fetcher()
+
+    if "news.cnyes.com" in article.url and fetch_cnyes_body(article, f):
+        return article
+
+    try:
+        resp = f.get(article.url)
+    except Exception as e:      # noqa: BLE001
+        article.fetch_error = "取得網頁失敗：%s" % e
+        return article
+
+    resp.encoding = resp.apparent_encoding or resp.encoding
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for bad in soup(["script", "style", "noscript", "iframe", "figure", "aside",
+                     "nav", "header", "footer", "form"]):
+        bad.decompose()
+
+    body, headline, date_s, author = _from_jsonld(soup)
+
+    paras: List[str] = []
+    host = urllib.parse.urlparse(resp.url).netloc
+    for dom, sel in _SITE_SELECTORS:
+        if dom in host:
+            node = soup.select_one(sel)
+            if node is not None:
+                paras = _paragraphs_from(node)
+            break
+
+    if not paras and body:
+        paras = [p.strip() for p in re.split(r"\n+|(?<=。)\s{2,}", body) if len(p.strip()) >= 12]
+    if not paras:
+        paras = _densest_block(soup)
+
+    article.paragraphs = _trim_tail_noise(paras)
+    paras = article.paragraphs
+    if not article.title and headline:
+        article.title = headline
+    if not article.published:
+        meta = soup.find("meta", property="article:published_time")
+        mc = str(meta.get("content", "")) if meta is not None else ""
+        article.published = _parse_dt(date_s) or _parse_dt(mc)
+    if not article.author and author:
+        article.author = str(author)[:30]
+    if not article.source:
+        st = soup.find("meta", property="og:site_name")
+        article.source = str(st.get("content", "")) if st is not None else host
+    if not paras:
+        article.fetch_error = article.fetch_error or "無法解析內文（可能為付費牆或動態載入）"
+    return article
+
+
+# --------------------------------------------------------------------------- #
+# 主流程
+# --------------------------------------------------------------------------- #
+def _dedup(articles: List[Article]) -> List[Article]:
+    seen_t, seen_u, out = set(), set(), []
+    for a in articles:
+        kt = _norm(a.title)[:40]
+        ku = re.sub(r"[?#].*$", "", a.url or "")
+        if not kt or kt in seen_t or (ku and ku in seen_u):
+            continue
+        seen_t.add(kt)
+        if ku:
+            seen_u.add(ku)
+        out.append(a)
+    return out
+
+
+def collect_news(company: str,
+                 extra_keywords: Optional[Iterable[str]] = None,
+                 years: float = 2.0,
+                 since: Optional[datetime] = None,
+                 until: Optional[datetime] = None,
+                 max_articles: int = 20,
+                 fetch_body: bool = True,
+                 use_cnyes: bool = True,
+                 official_url: str = "",
+                 priority_domains: Optional[Iterable[str]] = None,
+                 min_chars: int = 80,
+                 progress: Optional[Callable[[str, float], None]] = None,
+                 delay: float = 0.8) -> tuple[List[Article], List[str]]:
+    """蒐集某公司近 N 年新聞。回傳 (成功清單, 使用的關鍵字)。
+
+    來源優先序依「新聞來源彙整.xlsx」的實際使用統計：
+    經濟日報、工商時報、鉅亨網、公司官網為第一優先（另做定向檢索），
+    其餘媒體照樣蒐集，只是排在後面。
+    """
+    until = until or datetime.now()
+    since = since or (until - timedelta(days=int(365.25 * years)))
+    keywords = make_keywords(company, extra_keywords)
+    doms = list(priority_domains) if priority_domains is not None else list(PRIORITY_DOMAINS)
+    f = Fetcher(delay=delay)
+
+    def say(msg: str, pct: float) -> None:
+        if progress:
+            progress(msg, pct)
+
+    found: List[Article] = []
+
+    say("以關鍵字檢索 Google News：%s" % "、".join(keywords), 0.03)
+    try:
+        found += search_google_news(keywords, since, until, f)
+    except Exception as e:      # noqa: BLE001
+        say("Google News 檢索失敗：%s" % e, 0.05)
+
+    # 第一優先來源定向補搜
+    for n, dom in enumerate(doms):
+        name = DOMAIN_SOURCE.get(dom, dom)
+        say("定向檢索 %s…" % name, 0.05 + 0.02 * n)
+        try:
+            found += search_google_news(keywords, since, until, f, site=dom)
+        except Exception:      # noqa: BLE001
+            pass
+
+    if use_cnyes:
+        say("檢索鉅亨網…", 0.14)
+        for kw in keywords[:2]:
+            try:
+                found += search_cnyes(kw, since, until, f)
+            except Exception:      # noqa: BLE001
+                pass
+
+    short_name = keywords[1] if len(keywords) > 1 else company
+    official_label = "%s官網" % short_name if short_name else "公司官網"
+
+    official_hosts: List[str] = []
+    if official_url:
+        say("檢索公司官網…", 0.18)
+        official_hosts.append(urllib.parse.urlparse(
+            official_url if official_url.startswith("http")
+            else "https://" + official_url).netloc)
+        got = []
+        try:
+            got = search_official_site(official_url, short_name, since, until, f)
+        except Exception:      # noqa: BLE001
+            got = []
+        if not got:
+            # 官網若為 JS 動態渲染，靜態抓不到列表，改用 Google 定向檢索該網域
+            try:
+                got = search_google_news(keywords, since, until, f,
+                                         site=official_hosts[0])
+                for g in got:
+                    g.origin = "official"
+                    g.source = official_label
+            except Exception:      # noqa: BLE001
+                got = []
+        found += got
+
+    # 日期範圍與關鍵字命中過濾
+    cand: List[Article] = []
+    for a in found:
+        if a.published:
+            pdate = a.published.replace(tzinfo=None)
+            if not (since <= pdate <= until):
+                continue
+        a.matched = match_keywords(a.title, keywords)
+        cand.append(a)
+
+    cand = _dedup(cand)
+    # 排序：官網／經濟日報／工商時報／鉅亨網 優先，其次標題命中關鍵字，再依日期新到舊
+    cand.sort(key=lambda x: (source_tier(x, official_hosts),
+                             len(x.matched) == 0,
+                             -(x.published.timestamp() if x.published else 0)))
+    cand = cand[: max(max_articles * 3, max_articles)]
+    say("初步取得 %d 篇候選新聞" % len(cand), 0.22)
+
+    if not fetch_body:
+        return cand[:max_articles], keywords
+
+    ok: List[Article] = []
+    total = len(cand)
+    for i, a in enumerate(cand, 1):
+        if len(ok) >= max_articles:
+            break
+        say("解析第 %d/%d 篇：%s" % (i, total, a.title[:28]),
+            0.22 + 0.73 * i / max(total, 1))
+        if "news.google.com" in a.url:
+            a.url = resolve_google_url(a.url, f)
+        fetch_article_body(a, f)
+        a.source = normalize_source(a.url, a.source)
+        if a.origin == "official":
+            a.source = official_label
+        if a.char_count < min_chars:
+            continue
+        if a.origin != "official":
+            a.matched = match_keywords(a.title + a.body, keywords)
+            if not a.matched:
+                continue
+        ok.append(a)
+
+    ok.sort(key=lambda x: x.published or datetime.min, reverse=True)
+    say("完成，共 %d 篇可用新聞" % len(ok), 1.0)
+    return ok, keywords

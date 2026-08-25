@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# 產出檔與暫存資料（不上傳）
+*.doc
+*.docx
+*.json
+!requirements*.json
+out/
+output/
