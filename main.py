@@ -48,7 +48,9 @@ def main() -> int:
     ap.add_argument("--topic-boost", type=int, default=120,
                     help="命中關注議題的加權天數（預設 120；設 0 = 不加權）")
     ap.add_argument("--require-topic", action="store_true",
-                    help="只保留命中關注議題的新聞")
+                    help="只保留命中關注議題的新聞（預設不過濾，議題只做加權）")
+    ap.add_argument("--other-quota", type=float, default=0.25,
+                    help="保留給「未命中議題」新聞的名額比例（預設 0.25；設 0 = 不保留）")
     ap.add_argument("--official-url", default="",
                     help="公司官網網址，會一併抓官網最新消息")
     ap.add_argument("--priority-boost", type=int, default=180,
@@ -90,6 +92,7 @@ def main() -> int:
             official_url=args.official_url,
             related_companies=[r.strip() for r in args.related.split(",") if r.strip()],
             topic_boost_days=args.topic_boost, require_topic=args.require_topic,
+            other_quota_ratio=args.other_quota,
             priority_domains=doms,
             priority_boost_days={1: args.priority_boost,
                                  2: args.priority_boost // 3, 3: 0},

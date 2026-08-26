@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -102,8 +102,13 @@ with st.sidebar:
         help="這些來源會額外做一次定向檢索，並在排序時加權；其他媒體仍照常蒐集。")
     topic_boost = st.slider("關注議題加權（天）", 0, 365, 120, 15,
                             help="命中關稅／地緣政治／科技戰／出口管制／供應鏈轉移／AI 等"
-                                 "議題的新聞會往前排，最多計三項。設 0 = 不加權。")
-    require_topic = st.checkbox("只保留命中關注議題的新聞", value=False)
+                                 "議題的新聞會往前排，最多計兩項。這是加權不是門檻，"
+                                 "其他題材照樣蒐集。設 0 = 不加權。")
+    other_quota = st.slider("保留給其他題材的名額比例", 0.0, 0.6, 0.25, 0.05,
+                            help="避免議題加權把一般新聞整批擠掉：這個比例的名額會"
+                                 "優先留給未命中議題的新聞。設 0 = 不保留。")
+    require_topic = st.checkbox("只保留命中關注議題的新聞", value=False,
+                                help="預設不勾：議題只做優先排序，不排除其他題材。")
     boost = st.slider("優先來源加權（天）", 0, 365, 180, 15,
                       help="不是門檻而是加權：第一優先來源等於自動年輕這麼多天，"
                            "第二優先為其 1/3。設 0 就純依日期排序、完全不分來源。")
@@ -144,6 +149,7 @@ if run:
             use_cnyes=use_cnyes, official_url=official_url.strip(),
             related_companies=[r.strip() for r in related.splitlines() if r.strip()],
             topic_boost_days=int(topic_boost), require_topic=require_topic,
+            other_quota_ratio=float(other_quota),
             priority_domains=prio,
             priority_boost_days={1: int(boost), 2: int(boost) // 3, 3: 0},
             progress=_cb, delay=float(delay))

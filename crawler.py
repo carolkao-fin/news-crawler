@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import html as _html
 import json
@@ -383,13 +383,13 @@ def rank_score(article: "Article", now: datetime,
     """分數越小越前面。
 
     以「幾天前」為基準，再做三項調整：優先來源扣天數、命中關注議題扣天數
-    （最多算三個議題）、標題沒命中公司關鍵字加罰一年。
+    （最多算兩個議題）、標題沒命中公司關鍵字加罰一年。
     """
     boost = boost_days or TIER_BOOST_DAYS
     days = ((now - article.published).days
             if article.published else 3650)      # 沒日期的排最後
     days -= boost.get(source_tier(article, official_hosts), 0)
-    days -= min(len(article.topics), 3) * topic_boost
+    days -= min(len(article.topics), 2) * topic_boost   # 最多計兩項，避免加權失控
     if not article.matched:
         days += 365
     return days
@@ -905,6 +905,39 @@ def fetch_article_body(article: Article, fetcher: Optional[Fetcher] = None) -> A
 # --------------------------------------------------------------------------- #
 # 主流程
 # --------------------------------------------------------------------------- #
+def _reserve_slots(cand: List[Article], max_articles: int,
+                   reserve: int) -> List[Article]:
+    """把名額尾端保留給「未命中關注議題」的新聞。
+
+    議題定向檢索會讓候選池充滿命中議題的新聞，再加上議題加權，一般新聞幾乎排不進
+    名額——那等於把「優先某些議題」做成「限定某些議題」。
+
+    作法是照原排序逐一取用，但議題新聞取滿 `max_articles - reserve` 篇之後就先擱置，
+    把名額讓給後面的非議題新聞；被擱置的接在後面，不會被丟掉。原本排在最前面的
+    非議題新聞不會因此被往後推。
+    """
+    if reserve <= 0 or max_articles <= 0:
+        return cand
+    if all(a.topics for a in cand):
+        return cand
+
+    topic_cap = max(max_articles - reserve, 0)
+    picked: List[Article] = []
+    deferred: List[Article] = []
+    taken_topic = 0
+    for a in cand:
+        if len(picked) >= max_articles:
+            deferred.append(a)
+            continue
+        if a.topics:
+            if taken_topic >= topic_cap:
+                deferred.append(a)
+                continue
+            taken_topic += 1
+        picked.append(a)
+    return picked + deferred
+
+
 def _tag(articles: List[Article], entity: str) -> List[Article]:
     """標記這批結果是為哪一家對象檢索到的。"""
     for a in articles:
@@ -959,6 +992,7 @@ def collect_news(company: str,
                  priority_boost_days: Optional[dict] = None,
                  topic_boost_days: int = 120,
                  require_topic: bool = False,
+                 other_quota_ratio: float = 0.25,
                  min_chars: int = 80,
                  progress: Optional[Callable[[str, float], None]] = None,
                  delay: float = 0.8) -> tuple[List[Article], List[str]]:
@@ -974,8 +1008,10 @@ def collect_news(company: str,
 
     **議題**：對每一家對象另做兩組主題檢索（關稅、地緣政治、科技戰、出口管制、
     國安、資安／供應鏈、設廠、國產化、AI、機器人、量子、減碳、數位轉型、電動車），
-    命中議題的新聞在排序時每項扣 `topic_boost_days` 天，最多算三項。
-    `require_topic=True` 則只保留有命中議題的新聞。
+    議題同樣是**加權不是門檻**：命中議題的新聞每項扣 `topic_boost_days` 天（最多
+    算兩項）往前排，未命中議題的新聞照樣蒐集，並由 `other_quota_ratio` 保留一定
+    比例的名額（預設 25%），避免議題加權把一般新聞整批擠掉。只有把
+    `require_topic` 設為 True 才會真的過濾掉非議題新聞。
     """
     until = until or datetime.now()
     since = since or (until - timedelta(days=int(365.25 * years)))
@@ -1090,6 +1126,9 @@ def collect_news(company: str,
     # 排序：不限來源，但第一／第二優先來源享有新鮮度加權，因此同期新聞會排在前面
     cand.sort(key=lambda x: rank_score(x, until, official_hosts, boost,
                                        topic_boost_days))
+    # 先保留名額給非議題新聞，再截斷候選池，否則截斷會把它們先砍掉
+    cand = _reserve_slots(cand, max_articles,
+                          int(max_articles * max(other_quota_ratio, 0.0)))
     cand = cand[: max(max_articles * 3, max_articles)]
     say("初步取得 %d 篇候選新聞" % len(cand), 0.22)
 
