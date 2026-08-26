@@ -16,6 +16,8 @@
     --outdir .                    輸出資料夾
     --json out.json               另存原始資料，方便人工挑選後重跑
     --no-doc                      只產 .docx，不轉 .doc
+    --list-history                列出歷史紀錄
+    --from-history <id>           由某筆歷史紀錄重新產檔
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import json
 import os
 import sys
 
+import history as hist
 from crawler import Article, collect_news
 from docbuilder import build_docx, convert_to_doc, make_filename
 
@@ -38,7 +41,7 @@ def _progress(msg: str, pct: float) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="公司新聞蒐集 -> 訪視報告新聞附件產生器")
-    ap.add_argument("--company", required=True, help="目標公司全名")
+    ap.add_argument("--company", default="", help="目標公司全名（列出歷史紀錄時可省略）")
     ap.add_argument("--year", default="115", help="年度，例如 115")
     ap.add_argument("--case", default="", help="案號，例如 A-I-001")
     ap.add_argument("--tax-id", default="", help="統一編號")
@@ -67,9 +70,38 @@ def main() -> int:
     ap.add_argument("--no-cnyes", action="store_true", help="不使用鉅亨網來源")
     ap.add_argument("--no-doc", action="store_true", help="不轉成 .doc")
     ap.add_argument("--delay", type=float, default=0.8, help="請求間隔秒數")
+    ap.add_argument("--no-history", action="store_true", help="不寫入歷史紀錄")
+    ap.add_argument("--list-history", action="store_true", help="列出歷史紀錄後結束")
+    ap.add_argument("--from-history", default="", help="由某筆歷史紀錄產檔（給紀錄 id）")
     args = ap.parse_args()
 
-    if args.from_json:
+    if args.list_history:
+        rows = hist.list_runs()
+        if not rows:
+            print("尚無歷史紀錄（%s）" % hist.history_dir())
+            return 0
+        print("歷史紀錄（%s）：" % hist.history_dir())
+        for r in rows:
+            print("  %s  %s  %s %s  %d 篇  %s"
+                  % (r["id"], r["saved_at"], r["year"], r["case_no"],
+                     r["count"], r["company"]))
+        return 0
+
+    if not args.company and not (args.from_history or args.from_json):
+        ap.error("需要 --company（或改用 --from-history／--from-json）")
+
+    if args.from_history:
+        rec = hist.load_run(args.from_history)
+        if not rec:
+            print("找不到歷史紀錄：%s" % args.from_history)
+            return 1
+        arts = [Article.from_dict(d) for d in rec.get("articles", [])]
+        keywords = rec.get("keywords", [])
+        for f, v in (("company", "company"), ("year", "year"),
+                     ("case_no", "case"), ("tax_id", "tax_id")):
+            if rec.get(f) and not getattr(args, v, ""):
+                setattr(args, v, rec[f])
+    elif args.from_json:
         with open(args.from_json, encoding="utf-8") as fh:
             raw = json.load(fh)
         arts = []
@@ -101,6 +133,18 @@ def main() -> int:
     if not arts:
         print("找不到符合條件的新聞，請放寬年限或補充關鍵字。")
         return 1
+
+    if not args.no_history and not args.from_history:
+        rid = hist.save_run(
+            args.company, arts, keywords, year=args.year, case_no=args.case,
+            tax_id=args.tax_id,
+            params={"years": args.years, "max": args.max,
+                    "keywords": args.keywords, "related": args.related,
+                    "official_url": args.official_url,
+                    "topic_boost": args.topic_boost,
+                    "other_quota": args.other_quota,
+                    "require_topic": args.require_topic})
+        print("\n已存入歷史紀錄：%s（%s）" % (rid, hist.history_dir()))
 
     print("\n使用關鍵字：%s" % "、".join(keywords))
     print("納入 %d 篇：" % len(arts))

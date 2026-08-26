@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import html as _html
 import json
@@ -78,6 +78,24 @@ class Article:
     @property
     def char_count(self) -> int:
         return sum(len(p) for p in self.paragraphs)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Article":
+        """由 to_dict()／歷史紀錄的 JSON 還原成 Article。"""
+        pub = None
+        if d.get("published"):
+            try:
+                pub = datetime.strptime(str(d["published"])[:10], "%Y-%m-%d")
+            except ValueError:
+                pub = None
+        return cls(
+            title=d.get("title", ""), url=d.get("url", ""),
+            source=d.get("source", ""), published=pub,
+            author=d.get("author", ""), subtitle=d.get("subtitle", ""),
+            paragraphs=list(d.get("paragraphs", [])),
+            origin=d.get("origin", ""), matched=list(d.get("matched", [])),
+            topics=list(d.get("topics", [])), entity=d.get("entity", ""),
+            fetch_error=d.get("fetch_error", ""))
 
     def to_dict(self) -> dict:
         return {

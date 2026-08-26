@@ -16,3 +16,6 @@ venv/
 !requirements*.json
 out/
 output/
+
+# 歷史紀錄（本機資料，不上傳）
+history/

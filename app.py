@@ -30,12 +30,16 @@ APP_VERSION = "1.3.0"
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
 if (getattr(_crawler, "__version__", "") != APP_VERSION
-        or getattr(_docbuilder, "__version__", "") != APP_VERSION):
+        or getattr(_docbuilder, "__version__", "") != APP_VERSION
+        or getattr(_history, "__version__", "") != APP_VERSION):
     _crawler = importlib.reload(_crawler)
     _docbuilder = importlib.reload(_docbuilder)
+    _history = importlib.reload(_history)
 
 collect_news = _crawler.collect_news
 make_keywords = _crawler.make_keywords
+Article = _crawler.Article
+hist = _history
 build_docx = _docbuilder.build_docx
 convert_to_doc = _docbuilder.convert_to_doc
 make_filename = _docbuilder.make_filename
@@ -159,6 +163,20 @@ if run:
     st.session_state.company = company.strip()
     if not arts:
         st.warning("查無符合條件的新聞，可試著放寬年限或補充關鍵字。")
+    else:
+        try:
+            rid = hist.save_run(
+                company.strip(), arts, kws, year=year, case_no=case_no,
+                tax_id=tax_id,
+                params={"years": float(years), "max": int(max_articles),
+                        "keywords": extra, "related": related,
+                        "official_url": official_url.strip(),
+                        "topic_boost": int(topic_boost),
+                        "other_quota": float(other_quota),
+                        "require_topic": require_topic})
+            st.success("已存入歷史紀錄：%s" % rid)
+        except Exception as e:      # noqa: BLE001
+            st.warning("歷史紀錄寫入失敗（不影響本次結果）：%s" % e)
 
 
 articles = st.session_state.articles
@@ -277,3 +295,85 @@ else:
         5. 按 **產生 Word 檔** 下載，版面與現行訪視報告新聞附件一致。
         """
     )
+
+
+# --------------------------------------------------------------------------- #
+# 歷史紀錄
+# --------------------------------------------------------------------------- #
+st.divider()
+st.header("📚 歷史紀錄")
+
+try:
+    runs = hist.list_runs()
+except Exception as e:      # noqa: BLE001
+    runs = []
+    st.warning("讀取歷史紀錄失敗：%s" % e)
+
+st.caption("每次蒐集完成會自動存一筆。儲存位置：`%s`" % hist.history_dir())
+st.caption("⚠️ 雲端版的歷史紀錄存在伺服器暫存空間，**重新部署或重啟會清空**，"
+           "且同一個 App 的使用者都看得到。要長期保存請下載；敏感案件請用本機版執行。")
+
+if not runs:
+    st.info("目前沒有歷史紀錄。")
+else:
+    st.download_button("⬇️ 下載全部歷史紀錄（ZIP）", hist.export_zip(),
+                       file_name="news_history_%d筆.zip" % len(runs),
+                       mime="application/zip")
+
+    for r in runs:
+        title = "%s｜%s%s｜%s（%d 篇）" % (
+            r["saved_at"], r["year"], (" " + r["case_no"]) if r["case_no"] else "",
+            r["company"], r["count"])
+        with st.expander(title):
+            if r["sources"]:
+                st.caption("來源分布：" + "、".join(
+                    "%s %d" % (k, v) for k, v in list(r["sources"].items())[:8]))
+            if r["tax_id"]:
+                st.caption("統編：%s" % r["tax_id"])
+
+            b1, b2, b3, b4 = st.columns(4)
+
+            if b1.button("載回編輯", key="load_%s" % r["id"]):
+                rec = hist.load_run(r["id"])
+                if rec:
+                    st.session_state.articles = [Article.from_dict(d)
+                                                 for d in rec.get("articles", [])]
+                    st.session_state.keywords = rec.get("keywords", [])
+                    st.session_state.company = rec.get("company", "")
+                    for k in list(st.session_state.keys()):
+                        if str(k).startswith(("pick_", "title_", "body_")):
+                            del st.session_state[k]
+                    st.success("已載回 %d 篇，請往上捲動檢視。" % len(rec.get("articles", [])))
+                    st.rerun()
+
+            b2.download_button("下載 JSON", hist.record_json(r["id"]),
+                               file_name=r["id"] + ".json",
+                               mime="application/json",
+                               key="dljson_%s" % r["id"])
+
+            if b3.button("產生 Word", key="mkdoc_%s" % r["id"]):
+                rec = hist.load_run(r["id"]) or {}
+                arts_h = [Article.from_dict(d) for d in rec.get("articles", [])]
+                base = make_filename(rec.get("year", ""), rec.get("case_no", ""),
+                                     rec.get("tax_id", ""), rec.get("company", ""),
+                                     ext="")
+                with tempfile.TemporaryDirectory() as td:
+                    dp = os.path.join(td, base + ".docx")
+                    build_docx(arts_h, dp, company=rec.get("company", ""))
+                    with open(dp, "rb") as fh:
+                        st.session_state["hdocx_%s" % r["id"]] = fh.read()
+                    st.session_state["hname_%s" % r["id"]] = base + ".docx"
+                st.success("已產生，請按下方下載。")
+
+            if st.session_state.get("hdocx_%s" % r["id"]):
+                st.download_button(
+                    "⬇️ 下載 %s" % st.session_state["hname_%s" % r["id"]],
+                    st.session_state["hdocx_%s" % r["id"]],
+                    file_name=st.session_state["hname_%s" % r["id"]],
+                    mime="application/vnd.openxmlformats-officedocument."
+                         "wordprocessingml.document",
+                    key="dldocx_%s" % r["id"])
+
+            if b4.button("刪除", key="del_%s" % r["id"]):
+                hist.delete_run(r["id"])
+                st.rerun()

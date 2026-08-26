@@ -9,6 +9,7 @@
 |---|---|
 | `crawler.py` | 新聞蒐集核心：關鍵字展開、Google News／鉅亨網檢索、網址還原、全文擷取 |
 | `docbuilder.py` | Word 產出：重建原始 .doc 的五個樣式、TOC 目錄欄位、頁碼、.doc 轉檔 |
+| `history.py` | 歷史紀錄：存檔、列表、載回、刪除、ZIP 匯出 |
 | `main.py` | 命令列版 |
 | `app.py` | 網頁版（Streamlit） |
 | `requirements.txt` | 相依套件 |
@@ -44,6 +45,9 @@ python main.py --company 台灣禾邦電子有限公司 --year 115 --case A-I-00
 | `--from-json out.json` | 由既有 JSON 重新產檔（人工挑選／修訂後再跑一次） |
 | `--source-style print` | 來源行改用【日期/媒體】【記者】體例 |
 | `--no-doc` | 只產 .docx，不呼叫 Word 轉 .doc |
+| `--list-history` | 列出歷史紀錄 |
+| `--from-history <id>` | 由某筆歷史紀錄重新產檔 |
+| `--no-history` | 這次不寫入歷史紀錄 |
 
 輸出檔名自動組成 `年度_案號_統編_公司名`，例如
 `115_A-I-001_54955208_台灣禾邦電子有限公司.doc`。
@@ -69,6 +73,36 @@ streamlit run app.py
 
 雲端（Linux）沒有 Word，因此只會提供 **.docx** 下載；用 Word 開啟後另存新檔即可
 轉成 .doc。在本機 Windows 執行時，程式會自動呼叫 Word 轉出 .doc 並更新目錄頁碼。
+
+## 歷史紀錄
+
+每次蒐集完成會自動存一筆紀錄（命令列版與網頁版都會），內容包含公司／年度／案號／
+統編、使用的關鍵字與參數、來源分布，以及全部新聞的標題、網址、日期、來源、議題
+標籤與全文。
+
+儲存位置依序取用環境變數 `NEWS_CRAWLER_HISTORY`、程式資料夾下的 `history/`。
+一筆紀錄一個 JSON 檔，沒有索引檔，多個程序同時寫入不會互相覆蓋。
+
+### 網頁版
+
+頁面最下方「📚 歷史紀錄」可以：
+
+- **載回編輯**：把該次結果讀回上方清單，重新勾選、修訂後再產檔
+- **下載 JSON**：單筆原始資料
+- **產生 Word**：直接由該筆紀錄重出 `.docx` 並下載
+- **下載全部（ZIP）**：所有紀錄的 JSON 加一份 `索引.tsv`
+- **刪除**：移除該筆
+
+> ⚠️ 雲端版的歷史紀錄存在伺服器暫存空間，**重新部署或重啟會清空**，而且同一個 App
+> 的使用者都看得到。要長期保存請下載 ZIP；敏感案件請用本機版執行。
+
+### 命令列版
+
+```bash
+python main.py --list-history                      # 列出所有紀錄
+python main.py --from-history 20260826-103654_維格餅家股份有限公司   # 由紀錄重新產檔
+python main.py --company ... --no-history          # 這次不寫入紀錄
+```
 
 ## 產出版面
 
