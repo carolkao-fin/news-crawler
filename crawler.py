@@ -59,8 +59,10 @@ class Article:
     author: str = ""                     # 記者
     subtitle: str = ""                   # 副標
     paragraphs: List[str] = field(default_factory=list)   # 內文段落
-    origin: str = ""                     # 由哪個來源蒐集到（google / cnyes）
-    matched: List[str] = field(default_factory=list)      # 命中的關鍵字
+    origin: str = ""                     # 由哪個來源蒐集到（google / cnyes / official）
+    matched: List[str] = field(default_factory=list)      # 命中的公司關鍵字
+    topics: List[str] = field(default_factory=list)       # 命中的關注議題
+    entity: str = ""                     # 對應到哪一家（受訪公司／母公司／相關企業）
     fetch_error: str = ""
 
     @property
@@ -86,6 +88,8 @@ class Article:
             "paragraphs": self.paragraphs,
             "origin": self.origin,
             "matched": self.matched,
+            "topics": self.topics,
+            "entity": self.entity,
             "fetch_error": self.fetch_error,
         }
 
@@ -166,6 +170,84 @@ def _norm(s: str) -> str:
 def match_keywords(text: str, keywords: Iterable[str]) -> List[str]:
     t = _norm(text)
     return [k for k in keywords if _norm(k) and _norm(k) in t]
+
+
+# --------------------------------------------------------------------------- #
+# 主題分類：訪視報告關注的議題
+# --------------------------------------------------------------------------- #
+TOPIC_KEYWORDS = {
+    "美國加徵關稅": ["加徵關稅", "對等關稅", "懲罰性關稅", "關稅", "課稅", "反傾銷",
+                 "貿易戰", "232條款", "301條款", "貿易救濟"],
+    "地緣政治": ["地緣政治", "台海", "兩岸情勢", "中美角力", "美中對抗", "制裁",
+               "去風險", "紅色供應鏈", "脫鉤"],
+    "科技戰": ["科技戰", "晶片戰", "技術封鎖", "技術管制", "卡脖子", "先進製程管制"],
+    "國家安全": ["國家安全", "國安", "敏感科技", "關鍵技術", "投審會", "陸資審查",
+               "外資審查", "營運總部審查"],
+    "資安": ["資安", "資訊安全", "網路安全", "個資", "駭客", "營業秘密", "資料外洩"],
+    "出口管制": ["出口管制", "實體清單", "entity list", "出口許可", "管制清單",
+               "禁售", "禁令", "EAR"],
+    "電動車／車用": ["電動車", "車用", "車規", "自駕", "動力電池", "充電樁",
+                 "車電", "EV"],
+    "供應鏈": ["供應鏈", "產業鏈", "轉單", "分散生產", "去中化", "在地生產",
+             "產能移轉", "第二供應來源", "斷鏈"],
+    "國產化": ["國產化", "自主可控", "進口替代", "本土化", "國產替代", "在地化"],
+    "AI": ["人工智慧", "生成式", "大模型", "算力", "AI伺服器", "資料中心", "AI"],
+    "機器人": ["機器人", "人形機器人", "協作機器人", "自動化產線"],
+    "量子科技": ["量子電腦", "量子運算", "量子通訊", "量子科技", "量子"],
+    "能源與減碳": ["減碳", "淨零", "碳費", "碳關稅", "CBAM", "綠電", "再生能源",
+                "儲能", "節能", "ESG", "太陽能", "風電"],
+    "數位化": ["數位轉型", "數位化", "智慧製造", "工業4.0", "智慧工廠", "上雲"],
+}
+
+# 供應鏈轉移：地區詞 + 移轉動作詞同時出現才算，避免「美國」這種泛用詞誤判
+SUPPLY_CHAIN_REGIONS = {
+    "東南亞": ["東南亞", "越南", "泰國", "馬來西亞", "印尼", "菲律賓", "新加坡",
+             "檳城", "新南向"],
+    "北美": ["美國", "墨西哥", "加拿大", "北美", "德州", "亞利桑那", "俄亥俄"],
+    "歐洲": ["歐洲", "歐盟", "德國", "波蘭", "捷克", "匈牙利", "荷蘭", "英國",
+            "斯洛伐克"],
+    "印度": ["印度"],
+}
+_MOVE_WORDS = ["設廠", "建廠", "新廠", "擴廠", "擴產", "遷廠", "移轉", "轉移",
+               "布局", "產能", "投資設立", "落地", "設立子公司", "生產基地",
+               "在地生產", "西進", "南向", "產線"]
+
+
+def _kw_pattern(word: str) -> re.Pattern:
+    """英數關鍵字加詞界（避免 AI 命中 said／chain），中文用單純比對。"""
+    w = word.strip()
+    if re.fullmatch(r"[A-Za-z0-9.\- ]+", w):
+        return re.compile(r"(?<![A-Za-z0-9])" + re.escape(w.lower()) + r"(?![A-Za-z0-9])")
+    return re.compile(re.escape(w))
+
+
+_TOPIC_PATTERNS = {name: [_kw_pattern(w) for w in words]
+                   for name, words in TOPIC_KEYWORDS.items()}
+_REGION_PATTERNS = {name: [_kw_pattern(w) for w in words]
+                    for name, words in SUPPLY_CHAIN_REGIONS.items()}
+_MOVE_PATTERNS = [_kw_pattern(w) for w in _MOVE_WORDS]
+
+
+def match_topics(text: str) -> List[str]:
+    """回傳文章命中的關注議題；供應鏈轉移另標出地區。"""
+    t = _norm(text)
+    hits: List[str] = []
+    for name, pats in _TOPIC_PATTERNS.items():
+        if any(p.search(t) for p in pats):
+            hits.append(name)
+    if any(p.search(t) for p in _MOVE_PATTERNS):
+        for region, pats in _REGION_PATTERNS.items():
+            if any(p.search(t) for p in pats):
+                hits.append("供應鏈轉移（%s）" % region)
+    return hits
+
+
+# 給 Google News 用的主題檢索詞組（分兩組，避免單一 query 過長）
+TOPIC_QUERY_GROUPS = [
+    ["關稅", "地緣政治", "科技戰", "出口管制", "國家安全", "資安", "制裁"],
+    ["供應鏈", "設廠", "產能", "國產化", "AI", "機器人", "量子", "減碳",
+     "數位轉型", "電動車"],
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -294,12 +376,18 @@ TIER_BOOST_DAYS = {1: 180, 2: 60, 3: 0}
 
 def rank_score(article: "Article", now: datetime,
                official_hosts: Optional[Iterable[str]] = None,
-               boost_days: Optional[dict] = None) -> float:
-    """分數越小越前面：以「幾天前」為基準，優先來源扣天數，標題沒命中關鍵字加罰。"""
+               boost_days: Optional[dict] = None,
+               topic_boost: int = 120) -> float:
+    """分數越小越前面。
+
+    以「幾天前」為基準，再做三項調整：優先來源扣天數、命中關注議題扣天數
+    （最多算三個議題）、標題沒命中公司關鍵字加罰一年。
+    """
     boost = boost_days or TIER_BOOST_DAYS
     days = ((now - article.published).days
             if article.published else 3650)      # 沒日期的排最後
     days -= boost.get(source_tier(article, official_hosts), 0)
+    days -= min(len(article.topics), 3) * topic_boost
     if not article.matched:
         days += 365
     return days
@@ -309,9 +397,12 @@ GNEWS_RSS = "https://news.google.com/rss/search"
 
 
 def _gnews_query(keywords: List[str], since: datetime, until: datetime,
-                 site: str = "") -> str:
+                 site: str = "", topics: Optional[Iterable[str]] = None) -> str:
     kw = " OR ".join('"%s"' % k for k in keywords)
     q = "(%s)" % kw
+    tl = [t for t in (topics or []) if t]
+    if tl:
+        q += " (%s)" % " OR ".join('"%s"' % t for t in tl)
     if site:
         q += " site:%s" % site
     return "%s after:%s before:%s" % (
@@ -321,9 +412,10 @@ def _gnews_query(keywords: List[str], since: datetime, until: datetime,
 def search_google_news(keywords: List[str], since: datetime, until: datetime,
                        fetcher: Optional[Fetcher] = None,
                        hl: str = "zh-TW", gl: str = "TW",
-                       ceid: str = "TW:zh-Hant", site: str = "") -> List[Article]:
+                       ceid: str = "TW:zh-Hant", site: str = "",
+                       topics: Optional[Iterable[str]] = None) -> List[Article]:
     f = fetcher or Fetcher()
-    q = _gnews_query(keywords, since, until, site)
+    q = _gnews_query(keywords, since, until, site, topics)
     url = "%s?q=%s&hl=%s&gl=%s&ceid=%s" % (
         GNEWS_RSS, urllib.parse.quote(q), hl, gl, urllib.parse.quote(ceid))
     resp = f.get(url)
@@ -449,6 +541,70 @@ def fetch_cnyes_body(article: Article, fetcher: Optional[Fetcher] = None) -> boo
 
 
 # --------------------------------------------------------------------------- #
+# 編碼判斷
+# --------------------------------------------------------------------------- #
+_META_CHARSET = re.compile(
+    rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.I)
+
+# 中文網站常見編碼；big5 一律用 cp950（微軟擴充版）、gb2312 用 gb18030 才不會缺字
+_ENC_ALIAS = {
+    "big5": "cp950", "big5-hkscs": "big5hkscs", "ms950": "cp950",
+    "gb2312": "gb18030", "gbk": "gb18030", "utf8": "utf-8",
+}
+_ENC_CANDIDATES = ["utf-8", "cp950", "gb18030", "big5hkscs", "utf-16"]
+
+
+def _mojibake_score(text: str) -> float:
+    """回傳亂碼程度 0~1：解碼失敗字元與拉丁擴充區字元的比例。"""
+    if not text:
+        return 1.0
+    sample = text[:4000]
+    bad = 0
+    for ch in sample:
+        o = ord(ch)
+        # U+FFFD 代表解碼失敗；U+0080~U+00FF 是 Big5／GB 被誤當 latin-1 的典型徵狀
+        if o == 0xFFFD or 0x80 <= o <= 0xFF:
+            bad += 1
+    return bad / len(sample)
+
+
+def decode_html(content: bytes, header_charset: str = "") -> str:
+    """依「HTTP 標頭 → HTML meta → 逐一試解」順序決定編碼，並用亂碼比例挑最好的。
+
+    requests 遇到沒有標明 charset 的 text/html 會預設 ISO-8859-1，
+    Big5／GB 網頁因此整篇變亂碼；這裡不依賴那個預設值。
+    """
+    order: List[str] = []
+
+    def push(enc: Optional[str]) -> None:
+        if not enc:
+            return
+        e = _ENC_ALIAS.get(enc.strip().lower(), enc.strip().lower())
+        if e and e not in order and e != "iso-8859-1":
+            order.append(e)
+
+    push(header_charset)
+    m = _META_CHARSET.search(content[:4096])
+    if m:
+        push(m.group(1).decode("ascii", "ignore"))
+    for e in _ENC_CANDIDATES:
+        push(e)
+
+    best, best_score = "", 1.1
+    for enc in order:
+        try:
+            text = content.decode(enc, errors="replace")
+        except (LookupError, UnicodeError):
+            continue
+        score = _mojibake_score(text)
+        if score < 0.005:            # 幾乎沒有可疑字元，直接採用
+            return text
+        if score < best_score:
+            best, best_score = text, score
+    return best or content.decode("utf-8", errors="replace")
+
+
+# --------------------------------------------------------------------------- #
 # 公司官網
 # --------------------------------------------------------------------------- #
 _NEWS_NAV = re.compile(
@@ -470,7 +626,7 @@ def find_official_news_pages(base_url: str, fetcher: Optional[Fetcher] = None,
     except Exception:      # noqa: BLE001
         return []
     host = urllib.parse.urlparse(r.url).netloc
-    soup = BeautifulSoup(r.text, "html.parser")
+    soup = BeautifulSoup(decode_html(r.content), "html.parser")
     pages, seen = [], set()
     for a in soup.find_all("a", href=True):
         href = str(a["href"])
@@ -510,7 +666,7 @@ def search_official_site(base_url: str, company: str,
         except Exception:      # noqa: BLE001
             continue
         host = urllib.parse.urlparse(r.url).netloc
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(decode_html(r.content), "html.parser")
         for a in soup.find_all("a", href=True):
             text = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
             if len(text) < 8 or len(text) > 80:
@@ -700,8 +856,12 @@ def fetch_article_body(article: Article, fetcher: Optional[Fetcher] = None) -> A
         article.fetch_error = "取得網頁失敗：%s" % e
         return article
 
-    resp.encoding = resp.apparent_encoding or resp.encoding
-    soup = BeautifulSoup(resp.text, "html.parser")
+    ctype = resp.headers.get("content-type", "")
+    hdr_enc = ""
+    mm = re.search(r"charset=([\w\-]+)", ctype, re.I)
+    if mm:
+        hdr_enc = mm.group(1)
+    soup = BeautifulSoup(decode_html(resp.content, hdr_enc), "html.parser")
     for bad in soup(["script", "style", "noscript", "iframe", "figure", "aside",
                      "nav", "header", "footer", "form"]):
         bad.decompose()
@@ -743,6 +903,14 @@ def fetch_article_body(article: Article, fetcher: Optional[Fetcher] = None) -> A
 # --------------------------------------------------------------------------- #
 # 主流程
 # --------------------------------------------------------------------------- #
+def _tag(articles: List[Article], entity: str) -> List[Article]:
+    """標記這批結果是為哪一家對象檢索到的。"""
+    for a in articles:
+        if not a.entity:
+            a.entity = entity
+    return articles
+
+
 def _dedup(articles: List[Article]) -> List[Article]:
     """去重：同網址、同標題，以及「一則標題是另一則的前綴」的同稿異版。
 
@@ -784,8 +952,11 @@ def collect_news(company: str,
                  fetch_body: bool = True,
                  use_cnyes: bool = True,
                  official_url: str = "",
+                 related_companies: Optional[Iterable[str]] = None,
                  priority_domains: Optional[Iterable[str]] = None,
                  priority_boost_days: Optional[dict] = None,
+                 topic_boost_days: int = 120,
+                 require_topic: bool = False,
                  min_chars: int = 80,
                  progress: Optional[Callable[[str, float], None]] = None,
                  delay: float = 0.8) -> tuple[List[Article], List[str]]:
@@ -795,6 +966,14 @@ def collect_news(company: str,
     實際使用統計，經濟日報、工商時報、鉅亨網、公司官網為第一優先——除全網檢索外
     另做定向檢索，並在排序時享有 180 天的新鮮度加權（第二優先 60 天）。這是加權
     不是門檻，其他媒體只要夠新、夠相關一樣會排進來。
+
+    **對象**：受訪公司之外，`related_companies` 可填母公司（投資人）與相關企業／
+    轉投資公司，各自展開關鍵字檢索，結果會標明屬於哪一家（`Article.entity`）。
+
+    **議題**：對每一家對象另做兩組主題檢索（關稅、地緣政治、科技戰、出口管制、
+    國安、資安／供應鏈、設廠、國產化、AI、機器人、量子、減碳、數位轉型、電動車），
+    命中議題的新聞在排序時每項扣 `topic_boost_days` 天，最多算三項。
+    `require_topic=True` 則只保留有命中議題的新聞。
     """
     until = until or datetime.now()
     since = since or (until - timedelta(days=int(365.25 * years)))
@@ -809,18 +988,46 @@ def collect_news(company: str,
 
     found: List[Article] = []
 
+    # 檢索對象：受訪公司 + 母公司（投資人）+ 相關企業／轉投資
+    entities: List[tuple] = [(company, keywords)]
+    for rc in (related_companies or []):
+        rc = (rc or "").strip()
+        if rc:
+            entities.append((rc, make_keywords(rc)))
+
     say("以關鍵字檢索 Google News：%s" % "、".join(keywords), 0.03)
     try:
-        found += search_google_news(keywords, since, until, f)
+        found += _tag(search_google_news(keywords, since, until, f), company)
     except Exception as e:      # noqa: BLE001
-        say("Google News 檢索失敗：%s" % e, 0.05)
+        say("Google News 檢索失敗：%s" % e, 0.04)
+
+    # 母公司與相關企業
+    for n, (name, kws) in enumerate(entities[1:]):
+        say("檢索關聯企業：%s" % name, 0.05 + 0.01 * n)
+        try:
+            found += _tag(search_google_news(kws, since, until, f), name)
+        except Exception:      # noqa: BLE001
+            pass
+
+    # 議題定向檢索：每一家對象 × 兩組主題詞
+    for n, (name, kws) in enumerate(entities):
+        core = kws[1] if len(kws) > 1 else name
+        for gi, group in enumerate(TOPIC_QUERY_GROUPS):
+            say("檢索 %s 的關注議題（%d/%d）" % (name, gi + 1, len(TOPIC_QUERY_GROUPS)),
+                0.07 + 0.01 * (n * len(TOPIC_QUERY_GROUPS) + gi))
+            try:
+                found += _tag(search_google_news(
+                    [core], since, until, f, topics=group), name)
+            except Exception:      # noqa: BLE001
+                pass
 
     # 第一優先來源定向補搜
     for n, dom in enumerate(doms):
         name = DOMAIN_SOURCE.get(dom, dom)
-        say("定向檢索 %s…" % name, 0.05 + 0.02 * n)
+        say("定向檢索 %s…" % name, 0.12 + 0.01 * n)
         try:
-            found += search_google_news(keywords, since, until, f, site=dom)
+            found += _tag(search_google_news(keywords, since, until, f, site=dom),
+                          company)
         except Exception:      # noqa: BLE001
             pass
 
@@ -828,7 +1035,7 @@ def collect_news(company: str,
         say("檢索鉅亨網…", 0.14)
         for kw in keywords[:2]:
             try:
-                found += search_cnyes(kw, since, until, f)
+                found += _tag(search_cnyes(kw, since, until, f), company)
             except Exception:      # noqa: BLE001
                 pass
 
@@ -843,20 +1050,28 @@ def collect_news(company: str,
             else "https://" + official_url).netloc)
         got = []
         try:
-            got = search_official_site(official_url, short_name, since, until, f)
+            got = _tag(search_official_site(official_url, short_name,
+                                            since, until, f), company)
         except Exception:      # noqa: BLE001
             got = []
         if not got:
             # 官網若為 JS 動態渲染，靜態抓不到列表，改用 Google 定向檢索該網域
             try:
-                got = search_google_news(keywords, since, until, f,
-                                         site=official_hosts[0])
+                got = _tag(search_google_news(keywords, since, until, f,
+                                              site=official_hosts[0]), company)
                 for g in got:
                     g.origin = "official"
                     g.source = official_label
             except Exception:      # noqa: BLE001
                 got = []
         found += got
+
+    # 所有對象的關鍵字合起來當作相關性判準
+    all_keywords: List[str] = []
+    for _, kws in entities:
+        for k in kws:
+            if k not in all_keywords:
+                all_keywords.append(k)
 
     # 日期範圍與關鍵字命中過濾
     cand: List[Article] = []
@@ -865,12 +1080,14 @@ def collect_news(company: str,
             pdate = a.published.replace(tzinfo=None)
             if not (since <= pdate <= until):
                 continue
-        a.matched = match_keywords(a.title, keywords)
+        a.matched = match_keywords(a.title, all_keywords)
+        a.topics = match_topics(a.title)
         cand.append(a)
 
     cand = _dedup(cand)
     # 排序：不限來源，但第一／第二優先來源享有新鮮度加權，因此同期新聞會排在前面
-    cand.sort(key=lambda x: rank_score(x, until, official_hosts, boost))
+    cand.sort(key=lambda x: rank_score(x, until, official_hosts, boost,
+                                       topic_boost_days))
     cand = cand[: max(max_articles * 3, max_articles)]
     say("初步取得 %d 篇候選新聞" % len(cand), 0.22)
 
@@ -892,10 +1109,13 @@ def collect_news(company: str,
             a.source = official_label
         if a.char_count < min_chars:
             continue
+        a.topics = match_topics(a.title + a.body)
         if a.origin != "official":
-            a.matched = match_keywords(a.title + a.body, keywords)
+            a.matched = match_keywords(a.title + a.body, all_keywords)
             if not a.matched:
                 continue
+        if require_topic and not a.topics:
+            continue
         ok.append(a)
 
     ok.sort(key=lambda x: x.published or datetime.min, reverse=True)

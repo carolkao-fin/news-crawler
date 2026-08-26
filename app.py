@@ -50,6 +50,11 @@ with st.sidebar:
     st.header("檢索設定")
     extra = st.text_input("額外關鍵字（逗號分隔）",
                           placeholder="例：華新科,焦佑衡,精成科")
+    related = st.text_area(
+        "母公司／相關企業（每行一家）",
+        placeholder="例：\n華新麗華股份有限公司\n精成科技股份有限公司",
+        help="母公司（投資人）、受訪公司之相關企業或轉投資公司，會各自展開關鍵字檢索。",
+        height=90)
     official_url = st.text_input("公司官網網址（選填）",
                                  placeholder="例：https://www.example.com.tw",
                                  help="填了會一併抓官網「最新消息／新聞中心」。")
@@ -73,6 +78,10 @@ with st.sidebar:
                                "technews.tw": "科技新報",
                                "cna.com.tw": "中央社"}.get(d, d),
         help="這些來源會額外做一次定向檢索，並在排序時加權；其他媒體仍照常蒐集。")
+    topic_boost = st.slider("關注議題加權（天）", 0, 365, 120, 15,
+                            help="命中關稅／地緣政治／科技戰／出口管制／供應鏈轉移／AI 等"
+                                 "議題的新聞會往前排，最多計三項。設 0 = 不加權。")
+    require_topic = st.checkbox("只保留命中關注議題的新聞", value=False)
     boost = st.slider("優先來源加權（天）", 0, 365, 180, 15,
                       help="不是門檻而是加權：第一優先來源等於自動年輕這麼多天，"
                            "第二優先為其 1/3。設 0 就純依日期排序、完全不分來源。")
@@ -111,6 +120,8 @@ if run:
             extra_keywords=[k.strip() for k in extra.split(",") if k.strip()],
             years=float(years), max_articles=int(max_articles),
             use_cnyes=use_cnyes, official_url=official_url.strip(),
+            related_companies=[r.strip() for r in related.splitlines() if r.strip()],
+            topic_boost_days=int(topic_boost), require_topic=require_topic,
             priority_domains=prio,
             priority_boost_days={1: int(boost), 2: int(boost) // 3, 3: 0},
             progress=_cb, delay=float(delay))
@@ -144,9 +155,12 @@ if articles:
     for i, a in enumerate(articles):
         star = "★ " if (a.source in ("經濟日報", "工商時報", "鉅亨網")
                         or a.source.endswith("官網")) else ""
-        head = "%s%s｜%s｜%s（%d 字）" % (star, a.date_str or "日期不明",
-                                        a.source or "來源不明",
-                                        a.title, a.char_count)
+        tags = ("  " + " ".join("#" + t for t in a.topics[:4])) if a.topics else ""
+        ent = ("  〔%s〕" % a.entity
+               if a.entity and a.entity != st.session_state.company else "")
+        head = "%s%s｜%s｜%s（%d 字）%s%s" % (star, a.date_str or "日期不明",
+                                           a.source or "來源不明",
+                                           a.title, a.char_count, ent, tags)
         cols = st.columns([1, 20])
         with cols[0]:
             st.checkbox("納入", key="pick_%d" % i, value=True,
@@ -159,6 +173,10 @@ if articles:
                     st.write("🔗 %s" % a.url)
                 if a.matched:
                     st.caption("命中關鍵字：" + "、".join(a.matched))
+                if a.topics:
+                    st.caption("關注議題：" + "、".join(a.topics))
+                if a.entity:
+                    st.caption("檢索對象：" + a.entity)
                 if a.fetch_error:
                     st.warning(a.fetch_error)
                 st.text_area("內文", value="\n".join(a.paragraphs),

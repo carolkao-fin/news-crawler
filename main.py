@@ -9,6 +9,8 @@
 常用參數
 --------
     --keywords 華新科,焦佑衡      額外關鍵字（逗號分隔）
+    --related 母公司,轉投資公司    母公司（投資人）與相關企業，一併檢索
+    --require-topic               只保留命中關注議題（關稅／地緣政治／供應鏈…）的新聞
     --years 2                     蒐集近幾年（預設 2）
     --max 15                      最多幾篇（預設 15）
     --outdir .                    輸出資料夾
@@ -41,6 +43,12 @@ def main() -> int:
     ap.add_argument("--case", default="", help="案號，例如 A-I-001")
     ap.add_argument("--tax-id", default="", help="統一編號")
     ap.add_argument("--keywords", default="", help="額外關鍵字，逗號分隔")
+    ap.add_argument("--related", default="",
+                    help="母公司（投資人）與相關企業／轉投資公司，逗號分隔")
+    ap.add_argument("--topic-boost", type=int, default=120,
+                    help="命中關注議題的加權天數（預設 120；設 0 = 不加權）")
+    ap.add_argument("--require-topic", action="store_true",
+                    help="只保留命中關注議題的新聞")
     ap.add_argument("--official-url", default="",
                     help="公司官網網址，會一併抓官網最新消息")
     ap.add_argument("--priority-boost", type=int, default=180,
@@ -79,7 +87,10 @@ def main() -> int:
         arts, keywords = collect_news(
             args.company, extra_keywords=extra, years=args.years,
             max_articles=args.max, use_cnyes=not args.no_cnyes,
-            official_url=args.official_url, priority_domains=doms,
+            official_url=args.official_url,
+            related_companies=[r.strip() for r in args.related.split(",") if r.strip()],
+            topic_boost_days=args.topic_boost, require_topic=args.require_topic,
+            priority_domains=doms,
             priority_boost_days={1: args.priority_boost,
                                  2: args.priority_boost // 3, 3: 0},
             progress=_progress, delay=args.delay)
@@ -91,10 +102,12 @@ def main() -> int:
     print("\n使用關鍵字：%s" % "、".join(keywords))
     print("納入 %d 篇：" % len(arts))
     for i, a in enumerate(arts, 1):
-        print("  %2d. [%s] %s  %s  (%s，%d 字)"
+        print("  %2d. [%s] %s  %s  (%s，%d 字)%s%s"
               % (i, "★" if a.source in ("經濟日報", "工商時報", "鉅亨網")
                  or a.source.endswith("官網") else " ",
-                 a.date_str, a.title, a.source, a.char_count))
+                 a.date_str, a.title, a.source, a.char_count,
+                 "  〔%s〕" % a.entity if a.entity and a.entity != args.company else "",
+                 "  #" + " #".join(a.topics[:4]) if a.topics else ""))
 
     os.makedirs(args.outdir or ".", exist_ok=True)
 
