@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+__version__ = "1.2.0"
+
 import html as _html
 import json
 import re

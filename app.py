@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
@@ -21,11 +22,32 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from crawler import collect_news, make_keywords                    # noqa: E402
-from docbuilder import build_docx, convert_to_doc, make_filename   # noqa: E402
+import crawler as _crawler          # noqa: E402
+import docbuilder as _docbuilder    # noqa: E402
+
+APP_VERSION = "1.2.0"
+
+# Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
+# 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
+if (getattr(_crawler, "__version__", "") != APP_VERSION
+        or getattr(_docbuilder, "__version__", "") != APP_VERSION):
+    _crawler = importlib.reload(_crawler)
+    _docbuilder = importlib.reload(_docbuilder)
+
+collect_news = _crawler.collect_news
+make_keywords = _crawler.make_keywords
+build_docx = _docbuilder.build_docx
+convert_to_doc = _docbuilder.convert_to_doc
+make_filename = _docbuilder.make_filename
 
 st.set_page_config(page_title="公司新聞蒐集｜近兩年相關新聞產生器",
                    page_icon="📰", layout="wide")
+
+if getattr(_crawler, "__version__", "") != APP_VERSION:
+    st.error("程式模組版本不一致（app %s／crawler %s）。請到右下角 Manage app → "
+             "Reboot app 重啟一次。" % (APP_VERSION,
+                                    getattr(_crawler, "__version__", "未知")))
+    st.stop()
 
 st.title("📰 公司新聞蒐集 → 訪視報告新聞附件")
 st.caption("輸入目標公司，自動以關鍵字蒐集近兩年新聞，產出與 "

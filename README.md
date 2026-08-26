@@ -62,6 +62,10 @@ streamlit run app.py
 2. 到 <https://share.streamlit.io> 新建 app，選該 repo，主程式填 `app.py`。
 3. 不需要任何 API key 或 secrets。
 
+> **更新後若出現 `TypeError`**：Streamlit Cloud 在 repo 更新時會重跑主程式，但已
+> import 的模組仍留在記憶體，造成 `app.py` 是新版、`crawler.py` 是舊版。程式已內建
+> 版本檢查會自動重載；若仍出現，到右下角 **Manage app → Reboot app** 重啟一次即可。
+
 雲端（Linux）沒有 Word，因此只會提供 **.docx** 下載；用 Word 開啟後另存新檔即可
 轉成 .doc。在本機 Windows 執行時，程式會自動呼叫 Word 轉出 .doc 並更新目錄頁碼。
 

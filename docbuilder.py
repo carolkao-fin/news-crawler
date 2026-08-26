@@ -21,6 +21,8 @@ Linux/Streamlit Cloud 也能執行。
 
 from __future__ import annotations
 
+__version__ = "1.2.0"
+
 import os
 import re
 import subprocess
