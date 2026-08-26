@@ -10,6 +10,7 @@
 | `crawler.py` | 新聞蒐集核心：關鍵字展開、Google News／鉅亨網檢索、網址還原、全文擷取 |
 | `docbuilder.py` | Word 產出：重建原始 .doc 的五個樣式、TOC 目錄欄位、頁碼、.doc 轉檔 |
 | `history.py` | 歷史紀錄：存檔、列表、載回、刪除、ZIP 匯出 |
+| `smoke_test.py` | 冒煙測試：實際執行 app.py 並檢查例外與模組版本一致性 |
 | `main.py` | 命令列版 |
 | `app.py` | 網頁版（Streamlit） |
 | `requirements.txt` | 相依套件 |
@@ -73,6 +74,18 @@ streamlit run app.py
 
 雲端（Linux）沒有 Word，因此只會提供 **.docx** 下載；用 Word 開啟後另存新檔即可
 轉成 .doc。在本機 Windows 執行時，程式會自動呼叫 Word 轉出 .doc 並更新目錄頁碼。
+
+## 改完程式先跑冒煙測試
+
+```bash
+python smoke_test.py
+```
+
+檢查三個模組版本是否一致、`app.py` 的 `APP_VERSION` 是否同步，並用
+`streamlit.testing` 把 `app.py` 實際執行一遍。
+
+注意：`streamlit run` 起得來**不代表程式沒錯**——健康檢查在主程式執行前就回 200，
+腳本要等瀏覽器連上才跑，所以光看啟動 log 抓不到 `NameError`、`ImportError`。
 
 ## 歷史紀錄
 

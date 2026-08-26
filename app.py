@@ -24,8 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
+import history as _history          # noqa: E402
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
