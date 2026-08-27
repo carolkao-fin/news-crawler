@@ -21,7 +21,7 @@ Linux/Streamlit Cloud 也能執行。
 
 from __future__ import annotations
 
-__version__ = "1.5.4"
+__version__ = "1.5.5"
 
 import os
 import re
@@ -202,17 +202,22 @@ def xml_safe(text) -> str:
 # --------------------------------------------------------------------------- #
 # 來源行
 # --------------------------------------------------------------------------- #
-def source_lines(article, style: str = "auto") -> List[str]:
+def source_lines(article, style: str = "web") -> List[str]:
     """組出新聞來源標示行。
 
     print 體例：【2025-07-31/經濟日報/A15版/經營管理】【尹慧中】
     web   體例：網址 + 「MoneyDJ新聞 2025-06-18 11:23:41 記者 萬惠雯 報導」
+
+    沒有網址時 web 體例退回 print 的【】形式：網址體例的第一行就是網址，少了那一行
+    之後剩下的裸文字不像來源標示。原本這個退回行為屬於獨立的 "auto" 體例，但只要
+    有網址（Google News 與鉅亨網一定有）auto 與 web 的輸出就完全相同，等於多一個
+    永遠看不出差別的選項，因此把退回行為併進 web、把 auto 拿掉。
     """
     date = article.date_str
     src = article.source or ""
     author = (article.author or "").strip()
 
-    if style == "print" or (style == "auto" and not article.url):
+    if style == "print" or not article.url:
         head = "【%s】" % "/".join(x for x in [date, src] if x)
         return [head + ("【%s】" % author if author else "")]
 
@@ -234,7 +239,7 @@ def build_docx(articles: Iterable,
                out_path: str,
                section_title: str = "八.近兩年相關新聞",
                catalog_title: str = "新聞目錄",
-               source_style: str = "auto",
+               source_style: str = "web",
                company: str = "") -> str:
     """把 Article 清單寫成 Word 檔（.docx），回傳輸出路徑。"""
     doc = Document()

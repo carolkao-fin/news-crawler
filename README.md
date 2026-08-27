@@ -43,7 +43,7 @@ python main.py --company 台灣禾邦電子有限公司 --year 115 --case A-I-00
 | `--outdir .` | 輸出資料夾 |
 | `--json out.json` | 另存原始資料 |
 | `--from-json out.json` | 由既有 JSON 重新產檔（人工挑選／修訂後再跑一次） |
-| `--source-style print` | 來源行改用【日期/媒體】【記者】體例 |
+| `--source-style print` | 來源行改用【日期/媒體】【記者】體例（預設 `web`：網址＋媒體 日期） |
 | `--no-doc` | 只產 .docx，不呼叫 Word 轉 .doc |
 
 輸出檔名自動組成 `年度_案號_統編_公司名`，例如

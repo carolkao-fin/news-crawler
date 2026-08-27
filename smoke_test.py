@@ -277,5 +277,56 @@ if __name__ == "__main__":
     check("（對照）夾帶少量連結的正文不受影響", len(_paras(MIXED)) == 2,
           str([p[:16] for p in _paras(MIXED)]))
 
+    print("8. 來源體例：web 完整承接舊 auto 的行為")
+    from datetime import datetime
+
+    def _old_auto(a):
+        """舊版 auto 的邏輯，原樣重寫一份當基準——不能拿新程式碼自己驗自己。"""
+        date, src = a.date_str, a.source or ""
+        author = (a.author or "").strip()
+        if not a.url:
+            head = "【%s】" % "/".join(x for x in [date, src] if x)
+            return [head + ("【%s】" % author if author else "")]
+        bits = [x for x in [src, date] if x]
+        if author:
+            bits.append("記者%s 報導" % author
+                        if not author.startswith("記者") else author)
+        lines = [a.url]
+        if bits:
+            lines.append(" ".join(bits))
+        return lines
+
+    D = datetime(2025, 7, 31)
+    cases = [
+        ("有網址有記者", Article(title="t", url="https://x/1", source="經濟日報",
+                            author="尹慧中", published=D)),
+        ("有網址無記者", Article(title="t", url="https://x/1", source="經濟日報",
+                            published=D)),
+        ("無網址有記者", Article(title="t", url="", source="經濟日報",
+                            author="尹慧中", published=D)),
+        ("無網址無記者", Article(title="t", url="", source="經濟日報", published=D)),
+        ("無網址無日期", Article(title="t", url="", source="經濟日報")),
+    ]
+    diffs = [n for n, a in cases
+             if _db.source_lines(a, "web") != _old_auto(a)]
+    check("web 的輸出與舊 auto 逐案一致", not diffs, str(diffs))
+
+    # 有網址時 web 與 print 必須不同，否則這兩個選項也是重複的
+    with_url = cases[0][1]
+    check("有網址時 web 與 print 仍有區別",
+          _db.source_lines(with_url, "web") != _db.source_lines(with_url, "print"),
+          str(_db.source_lines(with_url, "web")))
+    check("無網址時 web 退回【】形式",
+          _db.source_lines(cases[2][1], "web") == _db.source_lines(cases[2][1], "print"),
+          str(_db.source_lines(cases[2][1], "web")))
+
+    at = AppTest.from_file("app.py", default_timeout=90).run()
+    # 注意 AppTest 的 options 回傳的是 format_func 之後的顯示文字，不是原始值
+    opts = [o for s in at.sidebar.selectbox for o in s.options]
+    check("下拉選單剩兩個選項", len(opts) == 2, str(opts))
+    check("已無「自動」選項", not any("自動" in o for o in opts), str(opts))
+    check("預設仍是 web（等同原本的自動）",
+          at.sidebar.selectbox[0].value == "web", str(at.sidebar.selectbox[0].value))
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)

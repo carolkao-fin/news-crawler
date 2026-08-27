@@ -63,7 +63,7 @@ def main() -> int:
     ap.add_argument("--json", dest="json_path", default="", help="另存 JSON 原始資料")
     ap.add_argument("--from-json", default="", help="改由既有 JSON 產檔，不重新爬取")
     ap.add_argument("--section-title", default="八.近兩年相關新聞")
-    ap.add_argument("--source-style", default="auto", choices=["auto", "web", "print"])
+    ap.add_argument("--source-style", default="web", choices=["web", "print"])
     ap.add_argument("--no-cnyes", action="store_true", help="不使用鉅亨網來源")
     ap.add_argument("--no-doc", action="store_true", help="不轉成 .doc")
     ap.add_argument("--delay", type=float, default=0.8, help="請求間隔秒數")

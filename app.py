@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -160,9 +160,10 @@ with st.sidebar:
     st.header("輸出設定")
     section_title = st.text_input("章節標題", value="八.近兩年相關新聞")
     source_style = st.selectbox(
-        "來源標示體例", ["auto", "web", "print"],
-        format_func=lambda x: {"auto": "自動", "web": "網址＋媒體 日期",
-                               "print": "【日期/媒體】【記者】"}[x])
+        "來源標示體例", ["web", "print"],
+        format_func=lambda x: {"web": "網址＋媒體 日期",
+                               "print": "【日期/媒體】【記者】"}[x],
+        help="沒有網址的新聞，「網址＋媒體 日期」會自動退回【日期/媒體】形式。")
 
     run = st.button("開始蒐集", type="primary", use_container_width=True)
     if st.button("🧹 清除輸入", use_container_width=True,
