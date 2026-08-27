@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.5.6"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -39,6 +39,18 @@ Article = _crawler.Article
 build_docx = _docbuilder.build_docx
 convert_to_doc = _docbuilder.convert_to_doc
 make_filename = _docbuilder.make_filename
+
+# 議題清單直接由 crawler 的詞庫產生，不在這裡另抄一份——詞庫加了新議題，說明欄
+# 自動跟著長出來，不會有「程式改了、說明忘了改」的落差。
+_TOPICS = list(_crawler.TOPIC_KEYWORDS)
+_REGIONS = list(getattr(_crawler, "SUPPLY_CHAIN_REGIONS", {}))
+TOPIC_HELP = (
+    "**目前內建 %d 類議題**：%s。\n\n"
+    "另有「供應鏈轉移」：需地區詞（%s）與設廠、擴產、遷廠、產能、布局等移轉動作詞"
+    "**同時出現**才算，命中時會標出是哪一個地區。\n\n"
+    "議題標籤是關鍵詞比對、不是語意判讀，文中順帶提到也會被標上，用於排序與人工"
+    "篩選參考。"
+    % (len(_TOPICS), "、".join(_TOPICS), "、".join(_REGIONS)))
 
 st.set_page_config(page_title="公司新聞蒐集｜近兩年相關新聞產生器",
                    page_icon="📰", layout="wide")
@@ -143,14 +155,16 @@ with st.sidebar:
                                "cna.com.tw": "中央社"}.get(d, d),
         help="這些來源會額外做一次定向檢索，並在排序時加權；其他媒體仍照常蒐集。")
     topic_boost = st.slider("關注議題加權（天）", 0, 365, 120, 15,
-                            help="命中關稅／地緣政治／科技戰／出口管制／供應鏈轉移／AI 等"
-                                 "議題的新聞會往前排，最多計兩項。這是加權不是門檻，"
-                                 "其他題材照樣蒐集。設 0 = 不加權。")
+                            help="命中關注議題的新聞會往前排，最多計兩項。這是加權"
+                                 "不是門檻，其他題材照樣蒐集。設 0 = 不加權。\n\n"
+                                 + TOPIC_HELP)
     other_quota = st.slider("保留給其他題材的名額比例", 0.0, 0.6, 0.25, 0.05,
                             help="避免議題加權把一般新聞整批擠掉：這個比例的名額會"
                                  "優先留給未命中議題的新聞。設 0 = 不保留。")
     require_topic = st.checkbox("只保留命中關注議題的新聞", value=False,
-                                help="預設不勾：議題只做優先排序，不排除其他題材。")
+                                help="預設不勾：議題只做優先排序，不排除其他題材。"
+                                     "勾了之後沒命中任何議題的新聞會被剔除，"
+                                     "篇數可能明顯變少。\n\n" + TOPIC_HELP)
     boost = st.slider("優先來源加權（天）", 0, 365, 180, 15,
                       help="不是門檻而是加權：第一優先來源等於自動年輕這麼多天，"
                            "第二優先為其 1/3。設 0 就純依日期排序、完全不分來源。")

@@ -328,5 +328,37 @@ if __name__ == "__main__":
     check("預設仍是 web（等同原本的自動）",
           at.sidebar.selectbox[0].value == "web", str(at.sidebar.selectbox[0].value))
 
+    print("9. 關注議題清單顯示在說明欄")
+    import importlib
+
+    import app as _app
+    _app = importlib.reload(_app)
+
+    topics = list(crawler.TOPIC_KEYWORDS)
+    regions = list(crawler.SUPPLY_CHAIN_REGIONS)
+    missing = [t for t in topics if t not in _app.TOPIC_HELP]
+    check("14 類議題全部出現在說明文字", not missing,
+          "缺少：%s" % missing if missing else "共 %d 類" % len(topics))
+    check("供應鏈轉移的地區也列出",
+          all(r in _app.TOPIC_HELP for r in regions), str(regions))
+
+    at = AppTest.from_file("app.py", default_timeout=90).run()
+    helps = [str(w.help or "") for w in list(at.sidebar.slider) + list(at.sidebar.checkbox)]
+    joined = "\n".join(helps)
+    check("議題加權滑桿的說明欄含完整清單",
+          all(t in joined for t in topics),
+          "缺少：%s" % [t for t in topics if t not in joined])
+
+    # 說明是由詞庫產生、不是另抄一份：塞一個假議題進詞庫，說明必須跟著出現
+    crawler.TOPIC_KEYWORDS["測試用假議題"] = ["測試用假議題"]
+    try:
+        _app2 = importlib.reload(_app)
+        picked_up = "測試用假議題" in _app2.TOPIC_HELP
+        check("（對照）詞庫新增議題時說明自動跟上", picked_up,
+              "" if picked_up else "說明未更新，可能是硬寫死的清單")
+    finally:
+        crawler.TOPIC_KEYWORDS.pop("測試用假議題", None)
+        importlib.reload(_app)
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)
