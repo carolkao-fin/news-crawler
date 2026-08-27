@@ -200,5 +200,39 @@ if __name__ == "__main__":
     check("小標（h2）仍保留",
           any("勞動力密集" in p for p in clean_paras), str([p[:14] for p in clean_paras]))
 
+    print("6. 清除輸入（重設案件欄位，保留調校設定）")
+    IN_KEYS = ["in_company", "in_case_no", "in_tax_id", "in_extra",
+               "in_related", "in_official_url"]
+
+    at = AppTest.from_file("app.py", default_timeout=90)
+    at.run()
+    # 使用者調整過的檢索設定：這些刻意沒給 in_ key，清除時不該被歸零
+    at.sidebar.slider[0].set_value(300).run()
+    at.sidebar.number_input[0].set_value(5.0).run()
+    for k in IN_KEYS:
+        at.session_state[k] = "填過的值"
+    at.session_state["in_year"] = "999"
+    at.session_state["articles"] = _fake()
+    at.session_state["company"] = "B公司"
+    at.run()
+
+    labels = [b.label for b in at.sidebar.button]
+    check("側欄有「清除輸入」按鈕", any("清除" in n for n in labels), str(labels))
+    tuned = (at.sidebar.slider[0].value, at.sidebar.number_input[0].value)
+
+    if any("清除" in n for n in labels):
+        [b for b in at.sidebar.button if "清除" in b.label][0].click().run()
+        check("點擊後無例外", not at.exception,
+              str(at.exception[0].value) if at.exception else "")
+        fs = at.session_state.filtered_state
+        left = {k: fs.get(k) for k in IN_KEYS if fs.get(k)}
+        check("案件欄位已清空", not left, str(left))
+        check("年度回到預設 115", fs.get("in_year") == "115", repr(fs.get("in_year")))
+        check("蒐集結果一併清空", at.session_state["articles"] == [])
+        check("調校設定保留未被歸零",
+              (at.sidebar.slider[0].value, at.sidebar.number_input[0].value) == tuned,
+              "清除前 %s → 清除後 %s"
+              % (tuned, (at.sidebar.slider[0].value, at.sidebar.number_input[0].value)))
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)

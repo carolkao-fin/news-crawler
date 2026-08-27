@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -76,10 +76,25 @@ def clear_results() -> None:
     st.session_state.pop("doc_bytes", None)
 
 
-# 重設一律延到下一次執行的最開頭做：此時 pick_／title_／body_ 這些 widget 還沒被
-# 建立，刪 key 不會和「widget 已實體化」的限制打架。
+def clear_inputs() -> None:
+    """清掉左側欄的案件輸入欄位，讓使用者重新輸入下一件。
+
+    只清「每一件都不一樣」的欄位（公司、年度、案號、統編、關鍵字、相關企業、
+    官網），檢索與輸出設定那些調校參數保持不動——那是使用者調過一次就想沿用的，
+    每換一家公司就被歸零反而礙事。清法是刪掉 widget 的 key，下一次執行時
+    widget 會回到自己的預設值。
+    """
+    for k in list(st.session_state.keys()):
+        if str(k).startswith("in_"):
+            del st.session_state[k]
+
+
+# 重設一律延到下一次執行的最開頭做：此時那些 widget 還沒被建立，刪 key 不會和
+# 「widget 已實體化」的限制打架。
 if st.session_state.pop("_do_reset", False):
     clear_results()
+if st.session_state.pop("_do_clear_inputs", False):
+    clear_inputs()
 
 
 # --------------------------------------------------------------------------- #
@@ -87,22 +102,26 @@ if st.session_state.pop("_do_reset", False):
 # --------------------------------------------------------------------------- #
 with st.sidebar:
     st.header("案件資訊")
-    company = st.text_input("公司全名 *", placeholder="例：台灣禾邦電子有限公司")
-    year = st.text_input("年度", value="115")
-    case_no = st.text_input("案號", placeholder="例：A-I-001")
-    tax_id = st.text_input("統一編號", placeholder="例：54955208")
+    # 這幾個欄位每一件都不一樣，都給 in_ 開頭的 key，「清除輸入」才有辦法重設。
+    company = st.text_input("公司全名 *", placeholder="例：台灣禾邦電子有限公司",
+                            key="in_company")
+    year = st.text_input("年度", value="115", key="in_year")
+    case_no = st.text_input("案號", placeholder="例：A-I-001", key="in_case_no")
+    tax_id = st.text_input("統一編號", placeholder="例：54955208", key="in_tax_id")
 
     st.header("檢索設定")
     extra = st.text_input("額外關鍵字（逗號分隔）",
-                          placeholder="例：華新科,焦佑衡,精成科")
+                          placeholder="例：華新科,焦佑衡,精成科",
+                          key="in_extra")
     related = st.text_area(
         "母公司／相關企業（每行一家）",
         placeholder="例：\n華新麗華股份有限公司\n精成科技股份有限公司",
         help="母公司（投資人）、受訪公司之相關企業或轉投資公司，會各自展開關鍵字檢索。",
-        height=90)
+        height=90, key="in_related")
     official_url = st.text_input("公司官網網址（選填）",
                                  placeholder="例：https://www.example.com.tw",
-                                 help="填了會一併抓官網「最新消息／新聞中心」。")
+                                 help="填了會一併抓官網「最新消息／新聞中心」。",
+                                 key="in_official_url")
     col_a, col_b = st.columns(2)
     with col_a:
         years = st.number_input("近幾年", 0.5, 10.0, 2.0, 0.5)
@@ -146,6 +165,12 @@ with st.sidebar:
                                "print": "【日期/媒體】【記者】"}[x])
 
     run = st.button("開始蒐集", type="primary", use_container_width=True)
+    if st.button("🧹 清除輸入", use_container_width=True,
+                 help="清空上方所有案件欄位與蒐集結果，準備輸入下一家公司。"
+                      "檢索設定與輸出設定會保留。"):
+        st.session_state["_do_clear_inputs"] = True
+        st.session_state["_do_reset"] = True
+        st.rerun()
 
 if company:
     st.info("將使用的關鍵字：" + "、".join(make_keywords(
