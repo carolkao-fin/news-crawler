@@ -411,14 +411,19 @@ if __name__ == "__main__":
           all(r in page for r in regions) and "同時出現" in page)
     check("標註了關鍵詞比對而非語意判讀", "不是語意判讀" in page)
 
-    # 有結果時是檢視畫面，不該再佔版面
+    # 說明放在分頁裡，蒐集完之後仍要在——原本掛在「沒有結果」的分支，一有結果就
+    # 消失，使用者想回去看只能先清掉結果。
     at2 = AppTest.from_file("app.py", default_timeout=90)
     at2.session_state["articles"] = _fake()
     at2.session_state["company"] = "B公司"
     at2.run()
-    page2 = "\n".join([m.value for m in at2.markdown]
-                      + [c.value for c in at2.caption])
-    check("（對照）有蒐集結果時不顯示議題表", "關注議題（共" not in page2)
+    page2 = chr(10).join([m.value for m in at2.markdown]
+                         + [c.value for c in at2.caption])
+    check("有蒐集結果時說明仍在（分頁常駐）", "關注議題（共" in page2)
+    gone = [t for t in topics if t not in page2]
+    check("有結果時議題清單也還在", not gone, "缺少：%s" % gone)
+    check("同時看得到蒐集結果", any("蒐集結果" in m.value for m in at2.markdown)
+          or any("共 2 篇" in c.value for c in at2.caption))
 
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)

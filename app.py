@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -268,106 +268,115 @@ articles = st.session_state.articles
 # --------------------------------------------------------------------------- #
 # 結果檢視與挑選
 # --------------------------------------------------------------------------- #
-if articles:
-    st.subheader("蒐集結果（勾選要放進 Word 的新聞）")
-    st.caption("共 %d 篇；預設全選。可展開檢視內文，確認無誤再產出。"
-               % len(articles))
+# 分頁：說明原本掛在「沒有結果」的分支裡，蒐集完就消失，想回去看只能
+# 先清掉結果。改成分頁後兩邊常駐，切過去看完再切回來，結果不受影響。
+tab_result, tab_help = st.tabs(["📋 蒐集結果", "📖 使用說明"])
 
-    c1, c2 = st.columns([1, 6])
-    with c1:
-        if st.button("全部取消"):
-            for i in range(len(articles)):
-                st.session_state["pick_%d" % i] = False
-        if st.button("全部勾選"):
-            for i in range(len(articles)):
-                st.session_state["pick_%d" % i] = True
+with tab_result:
+    if articles:
+        st.subheader("蒐集結果（勾選要放進 Word 的新聞）")
+        st.caption("共 %d 篇；預設全選。可展開檢視內文，確認無誤再產出。"
+                   % len(articles))
 
-    for i, a in enumerate(articles):
-        star = "★ " if (a.source in ("經濟日報", "工商時報", "鉅亨網")
-                        or a.source.endswith("官網")) else ""
-        tags = ("  " + " ".join("#" + t for t in a.topics[:4])) if a.topics else ""
-        ent = ("  〔%s〕" % a.entity
-               if a.entity and a.entity != st.session_state.company else "")
-        head = "%s%s｜%s｜%s（%d 字）%s%s" % (star, a.date_str or "日期不明",
-                                           a.source or "來源不明",
-                                           a.title, a.char_count, ent, tags)
-        cols = st.columns([1, 20])
-        with cols[0]:
-            st.checkbox("納入", key="pick_%d" % i, value=True,
-                        label_visibility="collapsed")
-        with cols[1]:
-            with st.expander(head):
-                new_title = st.text_input("標題", value=a.title, key="title_%d" % i)
-                a.title = new_title
-                if a.url:
-                    st.write("🔗 %s" % a.url)
-                if a.matched:
-                    st.caption("命中關鍵字：" + "、".join(a.matched))
-                if a.topics:
-                    st.caption("關注議題：" + "、".join(a.topics))
-                if a.entity:
-                    st.caption("檢索對象：" + a.entity)
-                if a.fetch_error:
-                    st.warning(a.fetch_error)
-                st.text_area("內文", value="\n".join(a.paragraphs),
-                             height=220, key="body_%d" % i)
+        c1, c2 = st.columns([1, 6])
+        with c1:
+            if st.button("全部取消"):
+                for i in range(len(articles)):
+                    st.session_state["pick_%d" % i] = False
+            if st.button("全部勾選"):
+                for i in range(len(articles)):
+                    st.session_state["pick_%d" % i] = True
 
-    picked = []
-    for i, a in enumerate(articles):
-        if st.session_state.get("pick_%d" % i, True):
-            body = st.session_state.get("body_%d" % i)
-            if body is not None:
-                a.paragraphs = [p.strip() for p in body.split("\n") if p.strip()]
-            picked.append(a)
+        for i, a in enumerate(articles):
+            star = "★ " if (a.source in ("經濟日報", "工商時報", "鉅亨網")
+                            or a.source.endswith("官網")) else ""
+            tags = ("  " + " ".join("#" + t for t in a.topics[:4])) if a.topics else ""
+            ent = ("  〔%s〕" % a.entity
+                   if a.entity and a.entity != st.session_state.company else "")
+            head = "%s%s｜%s｜%s（%d 字）%s%s" % (star, a.date_str or "日期不明",
+                                               a.source or "來源不明",
+                                               a.title, a.char_count, ent, tags)
+            cols = st.columns([1, 20])
+            with cols[0]:
+                st.checkbox("納入", key="pick_%d" % i, value=True,
+                            label_visibility="collapsed")
+            with cols[1]:
+                with st.expander(head):
+                    new_title = st.text_input("標題", value=a.title, key="title_%d" % i)
+                    a.title = new_title
+                    if a.url:
+                        st.write("🔗 %s" % a.url)
+                    if a.matched:
+                        st.caption("命中關鍵字：" + "、".join(a.matched))
+                    if a.topics:
+                        st.caption("關注議題：" + "、".join(a.topics))
+                    if a.entity:
+                        st.caption("檢索對象：" + a.entity)
+                    if a.fetch_error:
+                        st.warning(a.fetch_error)
+                    st.text_area("內文", value="\n".join(a.paragraphs),
+                                 height=220, key="body_%d" % i)
 
-    st.divider()
-    st.subheader("產出 Word 檔")
-    st.write("將納入 **%d** 篇。" % len(picked))
+        picked = []
+        for i, a in enumerate(articles):
+            if st.session_state.get("pick_%d" % i, True):
+                body = st.session_state.get("body_%d" % i)
+                if body is not None:
+                    a.paragraphs = [p.strip() for p in body.split("\n") if p.strip()]
+                picked.append(a)
 
-    fname_base = make_filename(year, case_no, tax_id,
-                               st.session_state.company or company, ext="")
-    st.code(fname_base + ".doc", language=None)
+        st.divider()
+        st.subheader("產出 Word 檔")
+        st.write("將納入 **%d** 篇。" % len(picked))
 
-    cc1, cc2, cc3 = st.columns(3)
+        fname_base = make_filename(year, case_no, tax_id,
+                                   st.session_state.company or company, ext="")
+        st.code(fname_base + ".doc", language=None)
 
-    if cc2.button("🔄 重新蒐集", use_container_width=True,
-                  help="清空目前的結果與所有修訂，回到剛進來的狀態；"
-                       "左側欄的設定會保留，改完按「開始蒐集」即可。"):
-        st.session_state["_do_reset"] = True
-        st.rerun()
+        cc1, cc2, cc3 = st.columns(3)
 
-    if cc1.button("產生 Word 檔", type="primary", disabled=not picked):
-        with tempfile.TemporaryDirectory() as td:
-            docx_path = os.path.join(td, fname_base + ".docx")
-            build_docx(picked, docx_path, section_title=section_title,
-                       source_style=source_style,
-                       company=st.session_state.company)
-            with open(docx_path, "rb") as fh:
-                st.session_state.docx_bytes = fh.read()
+        if cc2.button("🔄 重新蒐集", use_container_width=True,
+                      help="清空目前的結果與所有修訂，回到剛進來的狀態；"
+                           "左側欄的設定會保留，改完按「開始蒐集」即可。"):
+            st.session_state["_do_reset"] = True
+            st.rerun()
 
-            doc_path = convert_to_doc(docx_path, os.path.join(td, fname_base + ".doc"))
-            if doc_path and os.path.exists(doc_path):
-                with open(doc_path, "rb") as fh:
-                    st.session_state.doc_bytes = fh.read()
+        if cc1.button("產生 Word 檔", type="primary", disabled=not picked):
+            with tempfile.TemporaryDirectory() as td:
+                docx_path = os.path.join(td, fname_base + ".docx")
+                build_docx(picked, docx_path, section_title=section_title,
+                           source_style=source_style,
+                           company=st.session_state.company)
+                with open(docx_path, "rb") as fh:
+                    st.session_state.docx_bytes = fh.read()
+
+                doc_path = convert_to_doc(docx_path, os.path.join(td, fname_base + ".doc"))
+                if doc_path and os.path.exists(doc_path):
+                    with open(doc_path, "rb") as fh:
+                        st.session_state.doc_bytes = fh.read()
+                else:
+                    st.session_state.doc_bytes = None
+            st.success("已產生，請由下方下載。")
+
+        if st.session_state.get("docx_bytes"):
+            st.download_button(
+                "⬇️ 下載 .docx", st.session_state.docx_bytes,
+                file_name=fname_base + ".docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            if st.session_state.get("doc_bytes"):
+                st.download_button("⬇️ 下載 .doc（Word 97-2003）",
+                                   st.session_state.doc_bytes,
+                                   file_name=fname_base + ".doc",
+                                   mime="application/msword")
             else:
-                st.session_state.doc_bytes = None
-        st.success("已產生，請由下方下載。")
+                st.caption("此環境未安裝 Word，僅提供 .docx；用 Word 開啟後另存新檔即可轉成 .doc。"
+                           "目錄頁碼會在 Word 開檔時自動更新（或按 Ctrl+A 後 F9）。")
+    else:
+        st.info("左側欄輸入公司全名後按「開始蒐集」。"
+                "第一次使用可以先看上方的「📖 使用說明」分頁。")
 
-    if st.session_state.get("docx_bytes"):
-        st.download_button(
-            "⬇️ 下載 .docx", st.session_state.docx_bytes,
-            file_name=fname_base + ".docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        if st.session_state.get("doc_bytes"):
-            st.download_button("⬇️ 下載 .doc（Word 97-2003）",
-                               st.session_state.doc_bytes,
-                               file_name=fname_base + ".doc",
-                               mime="application/msword")
-        else:
-            st.caption("此環境未安裝 Word，僅提供 .docx；用 Word 開啟後另存新檔即可轉成 .doc。"
-                       "目錄頁碼會在 Word 開檔時自動更新（或按 Ctrl+A 後 F9）。")
 
-else:
+with tab_help:
     st.markdown(
         """
         ### 使用方式
