@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.5.3"
+__version__ = "1.5.4"
 
 import html as _html
 import json
@@ -837,8 +837,36 @@ _END_PAT = re.compile(
     r"本資料僅供參考|投資人應獨立判斷|不代表本網立場|加入.{0,4}粉絲團)")
 
 
+def _link_density(el) -> tuple:
+    """回傳 (連結文字佔比, 連結數)。整段都是連結文字者，多半是推薦新聞清單。"""
+    total = len(re.sub(r"\s+", "", el.get_text(" ", strip=True)))
+    if not total:
+        return 0.0, 0
+    links = el.find_all("a")
+    link_len = sum(len(re.sub(r"\s+", "", a.get_text(" ", strip=True))) for a in links)
+    return link_len / total, len(links)
+
+
+# 連結文字佔比達這個門檻，就當成「整段都是連結」
+_LINKY = 0.9
+
+
 def _paragraphs_from(node) -> List[str]:
+    """把節點裡的段落抓出來，順便濾掉推薦新聞的連結清單。
+
+    連結清單有兩種長相，分別對應下面兩道處理：
+
+    1. 好幾則擠在同一段，用「▪」之類的符號隔開（實測聯合新聞網）。這種段落的
+       連結文字佔比接近 1、連結數 ≥ 2，出現在文中任何位置都可以直接丟。
+    2. 一則一段掛在文末（實測經濟日報）。單一連結不能光看佔比就丟——正文引用
+       某個標題也可能整段是連結——但**出現在文末**就幾乎可以確定是推薦區，
+       所以只砍文末連續的純連結段落。
+
+    這比靠字數與標點猜測可靠：實測聯合新聞網那段有 137 字、經濟日報那段 42 字，
+    都超過 `_trim_tail_noise()` 的 34 字門檻，靠字數是砍不掉的。
+    """
     paras: List[str] = []
+    linky: List[bool] = []          # 與 paras 對齊：該段是否整段都是連結文字
     for el in node.find_all(["p", "h2", "h3", "h4"]):
         txt = el.get_text(" ", strip=True)
         txt = re.sub(r"\s+", " ", txt).strip()
@@ -850,7 +878,15 @@ def _paragraphs_from(node) -> List[str]:
             continue
         if paras and txt == paras[-1]:
             continue
+        dens, n_links = _link_density(el)
+        if dens >= _LINKY and n_links >= 2:
+            continue                   # 情況 1：多則連結擠成一段
         paras.append(txt)
+        linky.append(dens >= _LINKY and n_links >= 1)
+
+    while paras and linky[-1]:         # 情況 2：文末的純連結段落
+        paras.pop()
+        linky.pop()
     return paras
 
 

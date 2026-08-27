@@ -234,5 +234,48 @@ if __name__ == "__main__":
               "清除前 %s → 清除後 %s"
               % (tuned, (at.sidebar.slider[0].value, at.sidebar.number_input[0].value)))
 
+    print("7. 濾掉推薦新聞的連結清單（連結密度）")
+    LINKS = ("<a href='/1'>騎驢找馬？高為元續任投票過關3天就赴美選校長 清大教授怒：誠信問題</a> "
+             "▪ <a href='/2'>續任投票僅3天…清大校長高為元赴美選校長挨批渣男 校方說話了</a> "
+             "▪ <a href='/3'>分科錄取門檻下修！台大醫不採國文估這級分可上</a>")
+    TAIL_LINK = "<a href='/9'>台積電加減碼分歧、波克夏加碼 Alphabet…美機構第2季科技股大調整</a>"
+    ART = """
+    <div><section class="body">
+      <p>台灣半導體產業全球領先，四大業者在全球市占率近 75%%，卻面臨嚴峻的人才缺口。</p>
+      <p>高雄科技大學半導體製程設備技術人才培育基地今在楠梓校區啟用，每年培訓逾千名學生。</p>
+      <p>在產能持續擴張、人才需求孔急之際，這座基地的成立象徵南部半導體廊道再添戰力。</p>
+      <div>【文教熱話題】<p>%s</p></div>
+      <p>%s</p>
+    </section></div>
+    """ % (LINKS, TAIL_LINK)
+
+    def _paras(html):
+        s = BeautifulSoup(html, "html.parser")
+        return crawler._paragraphs_from(s.select_one("section.body"))
+
+    got = _paras(ART)
+    check("多則擠成一段的連結清單被濾掉",
+          not any("騎驢找馬" in p for p in got), str([p[:16] for p in got]))
+    check("文末的單則連結段落也被濾掉",
+          not any("加減碼分歧" in p for p in got), str([p[:16] for p in got]))
+    check("正文三段完整保留", len(got) == 3,
+          "%d 段：%s" % (len(got), [p[:14] for p in got]))
+
+    # 對照組一：同樣的文字但不是連結 —— 必須留著，否則就是靠字面猜測而非結構
+    plain = ART.replace("<a href='/1'>", "").replace("<a href='/2'>", "") \
+               .replace("<a href='/3'>", "").replace("<a href='/9'>", "") \
+               .replace("</a>", "")
+    got_plain = _paras(plain)
+    check("（對照）純文字不含連結時不會被誤刪", len(got_plain) == 5,
+          "%d 段：%s" % (len(got_plain), [p[:14] for p in got_plain]))
+
+    # 對照組二：正文中夾帶少量連結的正常段落不受影響
+    MIXED = """<div><section class="body">
+      <p>根據 <a href='/x'>台積電</a> 法說會說明，先進封裝產能供不應求，訂單能見度已看到明年下半年。</p>
+      <p>業界指出，先進封裝瓶頸改善也能讓供應鏈與零組件動能增強，載板廠可望同步受惠。</p>
+    </section></div>"""
+    check("（對照）夾帶少量連結的正文不受影響", len(_paras(MIXED)) == 2,
+          str([p[:16] for p in _paras(MIXED)]))
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)
