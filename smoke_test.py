@@ -201,8 +201,13 @@ if __name__ == "__main__":
           any("勞動力密集" in p for p in clean_paras), str([p[:14] for p in clean_paras]))
 
     print("6. 清除輸入（左側欄全部回到預設）")
-    TEXT_KEYS = ["in_company", "in_case_no", "in_tax_id", "in_extra",
-                 "in_related", "in_official_url"]
+    # widget key 帶世代編號（in0_company → 清除後變 in1_company），所以要從
+    # session_state 的 form_gen 現算，不能寫死。
+    TEXT_NAMES = ["company", "case_no", "tax_id", "extra", "related",
+                  "official_url"]
+
+    def wk(t, name):
+        return "in%d_%s" % (t.session_state["form_gen"], name)
 
     def _sidebar_state(t):
         """左側欄所有 widget 的現值，用來比對「有沒有回到剛開啟的樣子」。"""
@@ -224,10 +229,10 @@ if __name__ == "__main__":
     at.sidebar.checkbox[0].set_value(False).run()
     at.sidebar.selectbox[0].set_value("print").run()
     at.sidebar.multiselect[0].set_value(["ltn.com.tw"]).run()
-    for k in TEXT_KEYS:
-        at.session_state[k] = "填過的值"
-    at.session_state["in_year"] = "999"
-    at.session_state["in_section_title"] = "改過的章節標題"
+    for name in TEXT_NAMES:
+        at.session_state[wk(at, name)] = "填過的值"
+    at.session_state[wk(at, "year")] = "999"
+    at.session_state[wk(at, "section_title")] = "改過的章節標題"
     at.session_state["articles"] = _fake()
     at.session_state["company"] = "B公司"
     at.run()
@@ -244,10 +249,16 @@ if __name__ == "__main__":
         check("點擊後無例外", not at.exception,
               str(at.exception[0].value) if at.exception else "")
         fs = at.session_state.filtered_state
-        left = {k: fs.get(k) for k in TEXT_KEYS if fs.get(k)}
+        left = {n: fs.get(wk(at, n)) for n in TEXT_NAMES if fs.get(wk(at, n))}
         check("案件欄位已清空", not left, str(left))
-        check("年度回到預設 115", fs.get("in_year") == "115", repr(fs.get("in_year")))
+        check("年度回到預設 115", fs.get(wk(at, "year")) == "115",
+              repr(fs.get(wk(at, "year"))))
         check("蒐集結果一併清空", at.session_state["articles"] == [])
+        check("widget 世代已遞增（換掉整組 key）",
+              at.session_state["form_gen"] == 1,
+              "form_gen=%r" % at.session_state["form_gen"])
+        stale = [k for k in fs if str(k).startswith("in0_")]
+        check("舊世代的 key 已清掉", not stale, str(stale))
 
         after = _sidebar_state(at)
         diff = {k: (defaults[k], after.get(k))

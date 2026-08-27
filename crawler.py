@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.5.9"
+__version__ = "1.6.0"
 
 import html as _html
 import json

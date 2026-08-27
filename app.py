@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 import tempfile
 
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.5.9"
+APP_VERSION = "1.6.0"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -98,6 +99,26 @@ def clear_results() -> None:
     st.session_state.pop("doc_bytes", None)
 
 
+if "form_gen" not in st.session_state:
+    st.session_state.form_gen = 0
+
+_IN_KEY = re.compile(r"^in\d+_")
+
+
+def wkey(name: str) -> str:
+    """左側欄 widget 的 key，前面帶一個「世代」編號。
+
+    為什麼不直接用固定 key、清除時把它從 session_state 刪掉——**因為刪不掉**。
+    實測（本機瀏覽器）：先按「重新蒐集」再按「清除輸入」，伺服器端確實把 18 個
+    key 都刪了，畫面上的欄位卻原封不動；改用 `on_click` 回呼也一樣。前端會把上
+    一次的 widget 值連同這次的互動一起送回來，widget 重建時又被套上去。
+
+    換世代就沒有這個問題：`in0_company` 變成 `in1_company` 之後是一個前端從未見過
+    的 widget，沒有任何既有值可套用，只能以宣告的預設值出現。
+    """
+    return "in%d_%s" % (st.session_state.form_gen, name)
+
+
 def clear_inputs() -> None:
     """把左側欄整個還原成預設值，讓使用者重新輸入下一件。
 
@@ -106,12 +127,13 @@ def clear_inputs() -> None:
     回到預設——「清除輸入」就該是回到剛開啟時的樣子，留幾個欄位不動反而讓人不確定
     自己現在跑的到底是什麼條件。
 
-    清法是刪掉 widget 的 key，下一次執行時 widget 會回到自己宣告的預設值；因此
-    左側欄每個 widget 都要有 `in_` 開頭的 key，沒有 key 的就清不掉。
+    做法是把世代 +1，換掉整組 widget key（見 `wkey()`）。舊世代的 key 順手刪掉，
+    否則每清一次就多留一組沒人用的殘值在 session_state 裡。
     """
     for k in list(st.session_state.keys()):
-        if str(k).startswith("in_"):
+        if _IN_KEY.match(str(k)):
             del st.session_state[k]
+    st.session_state.form_gen += 1
 
 
 # 重設一律延到下一次執行的最開頭做：此時那些 widget 還沒被建立，刪 key 不會和
@@ -127,39 +149,39 @@ if st.session_state.pop("_do_clear_inputs", False):
 # --------------------------------------------------------------------------- #
 with st.sidebar:
     st.header("案件資訊")
-    # 左側欄每個 widget 都要有 in_ 開頭的 key，「清除輸入」才有辦法重設它；
-    # 新增欄位時漏了 key，那一項就會變成清不掉的漏網之魚。
+    # 左側欄每個 widget 的 key 都要走 wkey()，「清除輸入」才能把它換掉；
+    # 新增欄位時直接寫死 key，那一項就會變成清不掉的漏網之魚。
     company = st.text_input("公司全名 *", placeholder="例：台灣禾邦電子有限公司",
-                            key="in_company")
-    year = st.text_input("年度", value="115", key="in_year")
-    case_no = st.text_input("案號", placeholder="例：A-I-001", key="in_case_no")
-    tax_id = st.text_input("統一編號", placeholder="例：54955208", key="in_tax_id")
+                            key=wkey("company"))
+    year = st.text_input("年度", value="115", key=wkey("year"))
+    case_no = st.text_input("案號", placeholder="例：A-I-001", key=wkey("case_no"))
+    tax_id = st.text_input("統一編號", placeholder="例：54955208", key=wkey("tax_id"))
 
     st.header("檢索設定")
     extra = st.text_input("額外關鍵字（逗號分隔）",
                           placeholder="例：華新科,焦佑衡,精成科",
-                          key="in_extra")
+                          key=wkey("extra"))
     related = st.text_area(
         "母公司／相關企業（每行一家）",
         placeholder="例：\n華新麗華股份有限公司\n精成科技股份有限公司",
         help="母公司（投資人）、受訪公司之相關企業或轉投資公司，會各自展開關鍵字檢索。",
-        height=90, key="in_related")
+        height=90, key=wkey("related"))
     official_url = st.text_input("公司官網網址（選填）",
                                  placeholder="例：https://www.example.com.tw",
                                  help="填了會一併抓官網「最新消息／新聞中心」。",
-                                 key="in_official_url")
+                                 key=wkey("official_url"))
     col_a, col_b = st.columns(2)
     with col_a:
-        years = st.number_input("近幾年", 0.5, 10.0, 2.0, 0.5, key="in_years")
+        years = st.number_input("近幾年", 0.5, 10.0, 2.0, 0.5, key=wkey("years"))
     with col_b:
-        max_articles = st.number_input("最多篇數", 1, 60, 15, 1, key="in_max")
-    use_cnyes = st.checkbox("同時檢索鉅亨網", value=True, key="in_cnyes")
+        max_articles = st.number_input("最多篇數", 1, 60, 15, 1, key=wkey("max"))
+    use_cnyes = st.checkbox("同時檢索鉅亨網", value=True, key=wkey("cnyes"))
     prio = st.multiselect(
         "第一優先來源（定向檢索）",
         ["money.udn.com", "ctee.com.tw", "news.cnyes.com", "moneydj.com",
          "ltn.com.tw", "chinatimes.com", "technews.tw", "cna.com.tw"],
         default=["money.udn.com", "ctee.com.tw", "news.cnyes.com"],
-        key="in_prio",
+        key=wkey("prio"),
         format_func=lambda d: {"money.udn.com": "經濟日報",
                                "ctee.com.tw": "工商時報",
                                "news.cnyes.com": "鉅亨網",
@@ -170,27 +192,27 @@ with st.sidebar:
                                "cna.com.tw": "中央社"}.get(d, d),
         help="這些來源會額外做一次定向檢索，並在排序時加權；其他媒體仍照常蒐集。")
     topic_boost = st.slider("關注議題加權（天）", 0, 365, 120, 15,
-                            key="in_topic_boost",
+                            key=wkey("topic_boost"),
                             help="命中關注議題的新聞會往前排，最多計兩項。這是加權"
                                  "不是門檻，其他題材照樣蒐集。設 0 = 不加權。\n\n"
                                  + TOPIC_HELP)
     other_quota = st.slider("保留給其他題材的名額比例", 0.0, 0.6, 0.25, 0.05,
-                            key="in_other_quota",
+                            key=wkey("other_quota"),
                             help="避免議題加權把一般新聞整批擠掉：這個比例的名額會"
                                  "優先留給未命中議題的新聞。設 0 = 不保留。")
     require_topic = st.checkbox("只保留命中關注議題的新聞", value=False,
-                                key="in_require_topic")
-    boost = st.slider("優先來源加權（天）", 0, 365, 180, 15, key="in_boost",
+                                key=wkey("require_topic"))
+    boost = st.slider("優先來源加權（天）", 0, 365, 180, 15, key=wkey("boost"),
                       help="不是門檻而是加權：第一優先來源等於自動年輕這麼多天，"
                            "第二優先為其 1/3。設 0 就純依日期排序、完全不分來源。")
-    delay = st.slider("請求間隔（秒）", 0.3, 3.0, 0.8, 0.1, key="in_delay",
+    delay = st.slider("請求間隔（秒）", 0.3, 3.0, 0.8, 0.1, key=wkey("delay"),
                       help="間隔越長越不容易被來源網站擋，但速度較慢。")
 
     st.header("輸出設定")
     section_title = st.text_input("章節標題", value="八.近兩年相關新聞",
-                                  key="in_section_title")
+                                  key=wkey("section_title"))
     source_style = st.selectbox(
-        "來源標示體例", ["web", "print"], key="in_source_style",
+        "來源標示體例", ["web", "print"], key=wkey("source_style"),
         format_func=lambda x: {"web": "網址＋媒體 日期",
                                "print": "【日期/媒體】【記者】"}[x],
         help="沒有網址的新聞，「網址＋媒體 日期」會自動退回【日期/媒體】形式。")
