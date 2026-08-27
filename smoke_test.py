@@ -200,39 +200,59 @@ if __name__ == "__main__":
     check("小標（h2）仍保留",
           any("勞動力密集" in p for p in clean_paras), str([p[:14] for p in clean_paras]))
 
-    print("6. 清除輸入（重設案件欄位，保留調校設定）")
-    IN_KEYS = ["in_company", "in_case_no", "in_tax_id", "in_extra",
-               "in_related", "in_official_url"]
+    print("6. 清除輸入（左側欄全部回到預設）")
+    TEXT_KEYS = ["in_company", "in_case_no", "in_tax_id", "in_extra",
+                 "in_related", "in_official_url"]
+
+    def _sidebar_state(t):
+        """左側欄所有 widget 的現值，用來比對「有沒有回到剛開啟的樣子」。"""
+        out = {}
+        for group in (t.sidebar.slider, t.sidebar.number_input, t.sidebar.checkbox,
+                      t.sidebar.selectbox, t.sidebar.multiselect,
+                      t.sidebar.text_input, t.sidebar.text_area):
+            for w in group:
+                out[str(w.label)] = w.value
+        return out
 
     at = AppTest.from_file("app.py", default_timeout=90)
     at.run()
-    # 使用者調整過的檢索設定：這些刻意沒給 in_ key，清除時不該被歸零
+    defaults = _sidebar_state(at)          # 剛開啟時的基準
+
+    # 把每一類控制項都動過：文字、滑桿、數字、核取、下拉、多選
     at.sidebar.slider[0].set_value(300).run()
     at.sidebar.number_input[0].set_value(5.0).run()
-    for k in IN_KEYS:
+    at.sidebar.checkbox[0].set_value(False).run()
+    at.sidebar.selectbox[0].set_value("print").run()
+    at.sidebar.multiselect[0].set_value(["ltn.com.tw"]).run()
+    for k in TEXT_KEYS:
         at.session_state[k] = "填過的值"
     at.session_state["in_year"] = "999"
+    at.session_state["in_section_title"] = "改過的章節標題"
     at.session_state["articles"] = _fake()
     at.session_state["company"] = "B公司"
     at.run()
 
+    touched = _sidebar_state(at)
+    check("（對照）確實已把設定改離預設", touched != defaults,
+          "改動 %d 項" % sum(1 for k in defaults if defaults[k] != touched.get(k)))
+
     labels = [b.label for b in at.sidebar.button]
     check("側欄有「清除輸入」按鈕", any("清除" in n for n in labels), str(labels))
-    tuned = (at.sidebar.slider[0].value, at.sidebar.number_input[0].value)
 
     if any("清除" in n for n in labels):
         [b for b in at.sidebar.button if "清除" in b.label][0].click().run()
         check("點擊後無例外", not at.exception,
               str(at.exception[0].value) if at.exception else "")
         fs = at.session_state.filtered_state
-        left = {k: fs.get(k) for k in IN_KEYS if fs.get(k)}
+        left = {k: fs.get(k) for k in TEXT_KEYS if fs.get(k)}
         check("案件欄位已清空", not left, str(left))
         check("年度回到預設 115", fs.get("in_year") == "115", repr(fs.get("in_year")))
         check("蒐集結果一併清空", at.session_state["articles"] == [])
-        check("調校設定保留未被歸零",
-              (at.sidebar.slider[0].value, at.sidebar.number_input[0].value) == tuned,
-              "清除前 %s → 清除後 %s"
-              % (tuned, (at.sidebar.slider[0].value, at.sidebar.number_input[0].value)))
+
+        after = _sidebar_state(at)
+        diff = {k: (defaults[k], after.get(k))
+                for k in defaults if defaults[k] != after.get(k)}
+        check("左側欄每一項都回到預設", not diff, str(diff))
 
     print("7. 濾掉推薦新聞的連結清單（連結密度）")
     LINKS = ("<a href='/1'>騎驢找馬？高為元續任投票過關3天就赴美選校長 清大教授怒：誠信問題</a> "
