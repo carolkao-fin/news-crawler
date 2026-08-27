@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.5.6"
+APP_VERSION = "1.5.7"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -51,6 +51,16 @@ TOPIC_HELP = (
     "議題標籤是關鍵詞比對、不是語意判讀，文中順帶提到也會被標上，用於排序與人工"
     "篩選參考。"
     % (len(_TOPICS), "、".join(_TOPICS), "、".join(_REGIONS)))
+
+# 使用方式頁面用的完整版：連主要關鍵詞一起列出，看得到每個標籤是被什麼觸發的。
+_KW_SHOWN = 6
+TOPIC_TABLE = "\n".join(
+    ["| 議題 | 主要關鍵詞 |", "|---|---|"]
+    + ["| %s | %s%s |" % (name, "、".join(words[:_KW_SHOWN]),
+                          "…" if len(words) > _KW_SHOWN else "")
+       for name, words in _crawler.TOPIC_KEYWORDS.items()]
+    + ["| 供應鏈轉移 | 地區詞（%s）＋移轉動作詞（設廠、擴產、遷廠、產能、布局…）"
+       "**兩者同時出現**，並標出地區 |" % "、".join(_REGIONS)])
 
 st.set_page_config(page_title="公司新聞蒐集｜近兩年相關新聞產生器",
                    page_icon="📰", layout="wide")
@@ -340,5 +350,16 @@ else:
            自由財經、Yahoo、鉅亨、TechNews 等）與鉅亨網搜尋，抓取全文。
         4. 逐則檢視、勾選、必要時直接在頁面上修訂標題與內文。
         5. 按 **產生 Word 檔** 下載，版面與現行訪視報告新聞附件一致。
+
+        換下一家公司時，按左側欄的 **🧹 清除輸入** 清空所有案件欄位；
+        同一家想改條件重查，用結果區的 **🔄 重新蒐集** 即可。
         """
     )
+
+    st.markdown("### 關注議題（共 %d 類）" % len(_TOPICS))
+    st.caption("每則新聞會標上命中的議題。命中者排序時往前排（最多計兩項），"
+               "可用左側欄的「關注議題加權」調整強度，設 0 就不加權。"
+               "勾「只保留命中關注議題的新聞」則會把沒命中的整批剔除。")
+    st.markdown(TOPIC_TABLE)
+    st.caption("⚠️ 議題標籤是關鍵詞比對、不是語意判讀：文中順帶提到也會被標上。"
+               "標籤用於排序與人工篩選參考，不宜直接當成分析結論。")

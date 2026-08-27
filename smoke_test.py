@@ -360,5 +360,28 @@ if __name__ == "__main__":
         crawler.TOPIC_KEYWORDS.pop("測試用假議題", None)
         importlib.reload(_app)
 
+    print("10. 使用方式頁面顯示議題一覽表")
+    at = AppTest.from_file("app.py", default_timeout=90).run()
+    page = "\n".join([m.value for m in at.markdown]
+                     + [c.value for c in at.caption])
+    check("落地頁有「關注議題」段落", "關注議題（共" in page,
+          page[:60].replace("\n", " "))
+    missing = [t for t in topics if t not in page]
+    check("14 類議題全部列在頁面上", not missing, "缺少：%s" % missing)
+    check("表格附上主要關鍵詞",
+          "加徵關稅" in page and "人形機器人" in page and "碳關稅" in page)
+    check("供應鏈轉移的地區與動作詞條件有說明",
+          all(r in page for r in regions) and "同時出現" in page)
+    check("標註了關鍵詞比對而非語意判讀", "不是語意判讀" in page)
+
+    # 有結果時是檢視畫面，不該再佔版面
+    at2 = AppTest.from_file("app.py", default_timeout=90)
+    at2.session_state["articles"] = _fake()
+    at2.session_state["company"] = "B公司"
+    at2.run()
+    page2 = "\n".join([m.value for m in at2.markdown]
+                      + [c.value for c in at2.caption])
+    check("（對照）有蒐集結果時不顯示議題表", "關注議題（共" not in page2)
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)
