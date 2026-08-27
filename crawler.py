@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import html as _html
 import json
@@ -81,7 +81,7 @@ class Article:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Article":
-        """由 to_dict()／歷史紀錄的 JSON 還原成 Article。"""
+        """由 to_dict() 產生的 JSON 還原成 Article。"""
         pub = None
         if d.get("published"):
             try:

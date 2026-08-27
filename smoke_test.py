@@ -27,12 +27,10 @@ if __name__ == "__main__":
     print("1. 模組匯入與版本一致性")
     import crawler
     import docbuilder
-    import history
 
     versions = {"crawler": crawler.__version__,
-                "docbuilder": docbuilder.__version__,
-                "history": history.__version__}
-    check("三個模組都能匯入", True, str(versions))
+                "docbuilder": docbuilder.__version__}
+    check("兩個模組都能匯入", True, str(versions))
     check("版本一致", len(set(versions.values())) == 1, str(versions))
 
     src = open("app.py", encoding="utf-8").read()
