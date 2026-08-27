@@ -21,7 +21,7 @@ Linux/Streamlit Cloud 也能執行。
 
 from __future__ import annotations
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 
 import os
 import re

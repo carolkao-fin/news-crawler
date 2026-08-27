@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crawler as _crawler          # noqa: E402
 import docbuilder as _docbuilder    # noqa: E402
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.2"
 
 # Streamlit Cloud 在 repo 更新時會重跑主程式，但已 import 的模組仍留在 sys.modules，
 # 於是 app.py 是新版、crawler.py 是舊版，呼叫時就 TypeError。版本不符就強制重載。
@@ -52,6 +52,9 @@ TOPIC_HELP = (
     "議題標籤是關鍵詞比對、不是語意判讀，文中順帶提到也會被標上，用於排序與人工"
     "篩選參考。"
     % (len(_TOPICS), "、".join(_TOPICS), "、".join(_REGIONS)))
+
+# 操作手冊（網頁版，含每一步截圖）。手冊本身在 Artifact 上，這裡只放連結。
+MANUAL_URL = "https://claude.ai/code/artifact/793863f1-5fb6-44f8-96fe-f5d73d8074db"
 
 # 使用方式頁面用的完整版：連主要關鍵詞一起列出，看得到每個標籤是被什麼觸發的。
 _KW_SHOWN = 6
@@ -377,6 +380,8 @@ with tab_result:
 
 
 with tab_help:
+    st.info("📖 **完整操作手冊**（含每一步的實際截圖）："
+            "%s" % MANUAL_URL)
     st.markdown(
         """
         ### 使用方式
