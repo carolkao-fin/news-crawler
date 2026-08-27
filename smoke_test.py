@@ -343,11 +343,17 @@ if __name__ == "__main__":
           all(r in _app.TOPIC_HELP for r in regions), str(regions))
 
     at = AppTest.from_file("app.py", default_timeout=90).run()
-    helps = [str(w.help or "") for w in list(at.sidebar.slider) + list(at.sidebar.checkbox)]
-    joined = "\n".join(helps)
+    joined = chr(10).join(str(w.help or "") for w in at.sidebar.slider)
     check("議題加權滑桿的說明欄含完整清單",
           all(t in joined for t in topics),
           "缺少：%s" % [t for t in topics if t not in joined])
+    # 「只保留命中議題」核取方塊刻意不放 help：同一份清單在滑桿說明與首頁都有
+    only = [w for w in at.sidebar.checkbox if "只保留" in str(w.label)]
+    check("找得到「只保留命中議題」核取方塊", len(only) == 1,
+          str([str(w.label) for w in at.sidebar.checkbox]))
+    if only:
+        check("該核取方塊已不再掛說明欄", not (only[0].help or ""),
+              repr(only[0].help)[:60])
 
     # 說明是由詞庫產生、不是另抄一份：塞一個假議題進詞庫，說明必須跟著出現
     crawler.TOPIC_KEYWORDS["測試用假議題"] = ["測試用假議題"]
