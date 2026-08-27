@@ -113,5 +113,53 @@ if __name__ == "__main__":
           [a.title for a in arts] == ["B公司法說會", "B公司接單"],
           str([a.title for a in arts]))
 
+    print("4. 產檔時濾掉 XML 不接受的控制字元")
+    import os
+    import tempfile
+
+    import docbuilder as _db
+
+    BAD = "\x07"        # BEL：肉眼看不到，但 lxml 會直接拒收
+    dirty = [Article(title="A公司" + BAD + "利多消息", source="經濟日報",
+                     url="https://example.com/1",
+                     subtitle="副標" + BAD,
+                     paragraphs=["內容裡夾了控制字元" + BAD + "，句子夠長會走內文樣式。",
+                                 "第二段" + chr(0) + "含 NUL。"])]
+
+    # 對照組：先確認不清理真的會炸，否則下面的檢查測不出東西
+    _orig = _db.xml_safe
+    _db.xml_safe = lambda t: ("" if not t else str(t))
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            _db.build_docx(dirty, os.path.join(td, "t.docx"))
+        crashed = False
+    except Exception:       # noqa: BLE001
+        crashed = True
+    finally:
+        _db.xml_safe = _orig
+    check("（對照）不清理確實會產檔失敗", crashed)
+
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "t.docx")
+        try:
+            _db.build_docx(dirty, out, company="測試公司")
+            ok = os.path.exists(out)
+        except Exception as e:      # noqa: BLE001
+            ok = False
+            print("     ", e)
+        check("含控制字元也能產出 .docx", ok)
+        if ok:
+            from docx import Document as _Doc
+            texts = [p.text for p in _Doc(out).paragraphs]
+            residue = [t for t in texts
+                       if any(ord(c) < 32 and c not in "\t\n" for c in t)]
+            check("產出的內容沒有殘留控制字元", not residue, str(residue))
+            check("標題本身仍完整", any("A公司利多消息" in t for t in texts),
+                  str([t for t in texts if "A公司" in t]))
+
+    check("xml_safe 保留正常文字",
+          _db.xml_safe("台灣禾邦電子\n第二行\t欄位") == "台灣禾邦電子\n第二行\t欄位")
+    check("xml_safe 正規化 CRLF", _db.xml_safe("a\r\nb") == "a\nb")
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)

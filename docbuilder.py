@@ -21,7 +21,7 @@ Linux/Streamlit Cloud 也能執行。
 
 from __future__ import annotations
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 import os
 import re
@@ -182,6 +182,24 @@ def _add_page_numbers(doc) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 寫入前的字元清理
+# --------------------------------------------------------------------------- #
+# XML 1.0 只允許 \t \n \r 這三個控制字元，其餘 C0 控制碼、￾/￿ 與落單的
+# surrogate 一律不合法。新聞網頁偶爾會夾帶這些字元（多半來自編輯器或轉碼殘留），
+# 肉眼看不出來，但 lxml 在寫入時會丟 ValueError／UnicodeEncodeError，導致整份
+# Word 檔產不出來。既然它們在 Word 裡本來也顯示不了，寫入前直接濾掉。
+_ILLEGAL_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def xml_safe(text) -> str:
+    """濾掉不能寫進 XML 的字元，並把 \\r\\n／\\r 正規化成 \\n。"""
+    if not text:
+        return ""
+    s = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    return _ILLEGAL_XML.sub("", s)
+
+
+# --------------------------------------------------------------------------- #
 # 來源行
 # --------------------------------------------------------------------------- #
 def source_lines(article, style: str = "auto") -> List[str]:
@@ -225,21 +243,21 @@ def build_docx(articles: Iterable,
     _enable_update_fields(doc)
     _add_page_numbers(doc)
 
-    doc.add_paragraph(section_title, style=S_HEAD)
+    doc.add_paragraph(xml_safe(section_title), style=S_HEAD)
 
-    p = doc.add_paragraph(catalog_title)
+    p = doc.add_paragraph(xml_safe(catalog_title))
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     _add_toc_field(doc)
 
     for art in articles:
-        doc.add_paragraph(art.title, style=S_TITLE)
+        doc.add_paragraph(xml_safe(art.title), style=S_TITLE)
         for line in source_lines(art, source_style):
-            doc.add_paragraph(line, style=S_SOURCE)
+            doc.add_paragraph(xml_safe(line), style=S_SOURCE)
         if getattr(art, "subtitle", ""):
-            doc.add_paragraph(art.subtitle, style=S_SUB)
+            doc.add_paragraph(xml_safe(art.subtitle), style=S_SUB)
         for para in art.paragraphs:
-            text = para.strip()
+            text = xml_safe(para).strip()
             if not text:
                 continue
             # 短句且無句號者視為小標
@@ -260,7 +278,8 @@ def build_docx(articles: Iterable,
 def make_filename(year: str, case_no: str, tax_id: str, company: str,
                   ext: str = ".doc", sep: str = "_") -> str:
     """組出 115_A-I-001_54955208_台灣禾邦電子有限公司.doc 這種檔名。"""
-    parts = [str(x).strip() for x in (year, case_no, tax_id, company) if str(x).strip()]
+    parts = [xml_safe(x).strip() for x in (year, case_no, tax_id, company)
+             if xml_safe(x).strip()]
     name = sep.join(parts)
     name = re.sub(r'[\\/:*?"<>|]', "", name)
     return name + ext
