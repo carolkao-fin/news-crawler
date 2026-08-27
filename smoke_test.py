@@ -161,5 +161,44 @@ if __name__ == "__main__":
           _db.xml_safe("台灣禾邦電子\n第二行\t欄位") == "台灣禾邦電子\n第二行\t欄位")
     check("xml_safe 正規化 CRLF", _db.xml_safe("a\r\nb") == "a\nb")
 
+    print("5. 排除「相關文章／推薦閱讀」版面元件")
+    from bs4 import BeautifulSoup
+
+    # 仿 TechOrange（Elementor）的版面：正文 <p> 之後接一組推薦文章，標題是 <h3>。
+    # 這些標題夠長，事後靠字數與標點猜測的 _trim_tail_noise() 砍不掉。
+    REC = "機器人基礎模型市場價值上看 1,500 億美元：瑞士新創如何打造會拆解任務的 AI 大腦？"
+    HTML = """
+    <html><body><div class="post">
+      <div class="elementor-widget-theme-post-content"><div>
+        <p>鴻海科技集團與科技報橘首次聯合舉辦台灣 AI 機器人高峰會，探討產業趨勢與落地應用。</p>
+        <h2>鴻海目標從勞動力密集轉化為 AI 密集</h2>
+        <p>史喆說明，儘管多數企業在加工與倉儲物流方面已經實現自動化，但系統組裝環節仍是挑戰。</p>
+        <p>劉冠良表示，訓練 Physical AI 的基礎模型所需要的數據，不像語言模型擁有數萬億筆數據。</p>
+      </div></div>
+      <div class="elementor-posts-container">
+        <article class="elementor-post"><h3 class="elementor-post__title">%s</h3></article>
+        <article class="elementor-post"><h3 class="elementor-post__title">南韓砸逾 8,800 億美元打造 AI 國家隊：拆解台、日、韓的 AI 國力競賽</h3></article>
+      </div>
+    </div></body></html>
+    """ % REC
+
+    def _extract(strip: bool):
+        s = BeautifulSoup(HTML, "html.parser")
+        if strip:
+            crawler.strip_noise(s)
+        return crawler._densest_block(s)
+
+    dirty_paras = _extract(strip=False)
+    check("（對照）不清理時推薦文章會混進內文",
+          any(REC[:12] in p for p in dirty_paras), str(dirty_paras[-1:]))
+
+    clean_paras = _extract(strip=True)
+    check("清理後推薦文章不再出現",
+          not any(REC[:12] in p for p in clean_paras), str(clean_paras[-1:]))
+    check("清理後正文段落完整保留", len(clean_paras) == 4,
+          "%d 段：%s" % (len(clean_paras), [p[:14] for p in clean_paras]))
+    check("小標（h2）仍保留",
+          any("勞動力密集" in p for p in clean_paras), str([p[:14] for p in clean_paras]))
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)

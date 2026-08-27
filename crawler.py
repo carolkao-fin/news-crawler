@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 
 import html as _html
 import json
@@ -754,6 +754,20 @@ _SITE_SELECTORS = [
     ("nownews.com", "div.article-content"),
     ("news.pts.org.tw", "div.post-article"),
     ("rti.org.tw", "div.article-content"),
+    ("techorange.com", "div.elementor-widget-theme-post-content"),
+    ("buzzorange.com", "div.elementor-widget-theme-post-content"),
+]
+
+# 「相關文章／推薦閱讀」區塊。這些是版面元件不是內文，卻常和正文包在同一個容器裡，
+# 而且標題多半是 <h3>——_paragraphs_from() 會把它們當成小標收進來。實測 TechOrange
+# 一篇會多帶四則推薦新聞標題，而且那些標題夠長（40 字以上），事後靠字數與標點猜測
+# 的 _trim_tail_noise() 砍不掉。解析前整塊移除，比事後猜可靠得多。
+_NOISE_SELECTORS = [
+    ".elementor-posts-container",      # Elementor 文章列表元件，WordPress 站台常見
+    ".elementor-post__title",
+    ".related-posts", ".related-post", ".related-articles", ".related-news",
+    ".recommend-list", ".recommended-posts", ".popular-posts", ".hot-posts",
+    "#related-posts", "#related_posts", "#recommend",
 ]
 
 _DROP_PAT = re.compile(
@@ -761,6 +775,14 @@ _DROP_PAT = re.compile(
     r"責任編輯|本文.{0,8}授權|原文出處|訂閱|廣告|Advertisement|留言|分享至|"
     r"剪貼簿|複製到|請點擊|看更多|熱門推薦|推薦閱讀|你可能也想看|字級設定|"
     r"版權所有|未經授權|免責聲明|投資有風險)")
+
+
+def strip_noise(soup: BeautifulSoup) -> BeautifulSoup:
+    """就地移除版面元件（相關文章／推薦閱讀等），回傳同一個 soup。"""
+    for sel in _NOISE_SELECTORS:
+        for bad in soup.select(sel):
+            bad.decompose()
+    return soup
 
 
 def _trim_tail_noise(paras: List[str], max_drop: int = 6) -> List[str]:
@@ -885,6 +907,7 @@ def fetch_article_body(article: Article, fetcher: Optional[Fetcher] = None) -> A
     for bad in soup(["script", "style", "noscript", "iframe", "figure", "aside",
                      "nav", "header", "footer", "form"]):
         bad.decompose()
+    strip_noise(soup)
 
     body, headline, date_s, author = _from_jsonld(soup)
 
