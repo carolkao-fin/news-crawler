@@ -58,6 +58,9 @@ streamlit run app.py
 流程：左側輸入公司與案件資訊 → 開始蒐集 → 逐則檢視／勾選／就地修訂標題與內文
 → 產生 Word 檔並下載。
 
+換下一家公司時按 **🔄 重新蒐集**：清空目前的結果與所有就地修訂，回到剛進來的狀態
+（左側欄的設定會保留）。直接改左側欄再按「開始蒐集」也會做同樣的清空。
+
 ### 部署到 Streamlit Community Cloud
 
 1. 把本資料夾推上 GitHub。
@@ -77,8 +80,9 @@ streamlit run app.py
 python smoke_test.py
 ```
 
-檢查三個模組版本是否一致、`app.py` 的 `APP_VERSION` 是否同步，並用
-`streamlit.testing` 把 `app.py` 實際執行一遍。
+檢查兩個模組版本是否一致、`app.py` 的 `APP_VERSION` 是否同步，用
+`streamlit.testing` 把 `app.py` 實際執行一遍，並驗證「重新蒐集」確實清掉上一次的
+結果與就地修訂。
 
 注意：`streamlit run` 起得來**不代表程式沒錯**——健康檢查在主程式執行前就回 200，
 腳本要等瀏覽器連上才跑，所以光看啟動 log 抓不到 `NameError`、`ImportError`。

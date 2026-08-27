@@ -58,5 +58,60 @@ if __name__ == "__main__":
     check("側欄有輸入欄位", len(at.sidebar.text_input) >= 3,
           "text_input=%d" % len(at.sidebar.text_input))
 
+    print("3. 重新蒐集（清空上一次的結果與修訂）")
+    from crawler import Article
+
+    EDITED = "使用者改過的標題"
+
+    def _fake():
+        return [Article(title="B公司法說會", source="鉅亨網", paragraphs=["新內容"]),
+                Article(title="B公司接單", source="工商時報", paragraphs=["新內容2"])]
+
+    def _titles(t):
+        return [w.value for w in t.text_input
+                if str(w.key or "").startswith("title_")]
+
+    at = AppTest.from_file("app.py", default_timeout=90)
+    at.session_state["articles"] = _fake()
+    at.session_state["company"] = "B公司"
+    at.run()
+    labels = [b.label for b in at.button]
+    check("有「重新蒐集」按鈕", any("重新蒐集" in n for n in labels), str(labels))
+    if any("重新蒐集" in n for n in labels):
+        [b for b in at.button if "重新蒐集" in b.label][0].click().run()
+        check("點擊後無例外", not at.exception)
+        check("結果已清空", at.session_state["articles"] == [])
+
+    # 對照組：殘留的 title_／pick_ 會蓋掉新結果——這是 clear_results() 要解決的問題，
+    # 先確認這個機制真的存在，否則下面的修復組恆真、測不出任何東西。
+    at = AppTest.from_file("app.py", default_timeout=90)
+    at.session_state["title_0"] = EDITED
+    at.session_state["articles"] = _fake()
+    at.session_state["company"] = "B公司"
+    at.run()
+    leak = _titles(at)
+    check("（對照）殘留確實會汙染新結果", bool(leak) and leak[0] == EDITED, str(leak))
+
+    # 修復組：走 _do_reset，即「重新蒐集」按鈕做的事
+    at = AppTest.from_file("app.py", default_timeout=90)
+    at.session_state["title_0"] = EDITED
+    at.session_state["pick_1"] = False
+    at.session_state["docx_bytes"] = b"fake"
+    at.session_state["_do_reset"] = True
+    at.run()
+    check("舊的 docx_bytes 已清掉",
+          not at.session_state.filtered_state.get("docx_bytes"))
+    arts = _fake()
+    at.session_state["articles"] = arts
+    at.session_state["company"] = "B公司"
+    at.run()
+    check("清空後新結果不帶入舊修訂",
+          _titles(at) == ["B公司法說會", "B公司接單"], str(_titles(at)))
+    check("清空後勾選回到全選",
+          all(at.session_state["pick_%d" % i] for i in range(2)))
+    check("Article 物件標題未被汙染",
+          [a.title for a in arts] == ["B公司法說會", "B公司接單"],
+          str([a.title for a in arts]))
+
     print("\n結果：%s" % ("全部通過" if FAIL == 0 else "%d 項失敗" % FAIL))
     sys.exit(1 if FAIL else 0)

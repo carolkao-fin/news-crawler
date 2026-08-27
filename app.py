@@ -59,6 +59,29 @@ if "articles" not in st.session_state:
     st.session_state.company = ""
 
 
+def clear_results() -> None:
+    """清掉上一次的蒐集結果與所有就地修訂。
+
+    勾選狀態、標題與內文都是以 `pick_i`／`title_i`／`body_i` 存在 session_state，
+    不清掉的話下一次蒐集會沿用同一組 key：Streamlit 遇到已存在的 key 會忽略
+    `value=`，於是上一家公司改過的標題與內文會套到新結果的同一個序號上。
+    """
+    for k in list(st.session_state.keys()):
+        if str(k).startswith(("pick_", "title_", "body_")):
+            del st.session_state[k]
+    st.session_state.articles = []
+    st.session_state.keywords = []
+    st.session_state.company = ""
+    st.session_state.pop("docx_bytes", None)
+    st.session_state.pop("doc_bytes", None)
+
+
+# 重設一律延到下一次執行的最開頭做：此時 pick_／title_／body_ 這些 widget 還沒被
+# 建立，刪 key 不會和「widget 已實體化」的限制打架。
+if st.session_state.pop("_do_reset", False):
+    clear_results()
+
+
 # --------------------------------------------------------------------------- #
 # 輸入區
 # --------------------------------------------------------------------------- #
@@ -136,6 +159,7 @@ if run:
     if not company.strip():
         st.error("請先輸入公司全名。")
         st.stop()
+    clear_results()
     bar = st.progress(0.0, text="準備中…")
 
     def _cb(msg: str, pct: float) -> None:
@@ -227,6 +251,12 @@ if articles:
     st.code(fname_base + ".doc", language=None)
 
     cc1, cc2, cc3 = st.columns(3)
+
+    if cc2.button("🔄 重新蒐集", use_container_width=True,
+                  help="清空目前的結果與所有修訂，回到剛進來的狀態；"
+                       "左側欄的設定會保留，改完按「開始蒐集」即可。"):
+        st.session_state["_do_reset"] = True
+        st.rerun()
 
     if cc1.button("產生 Word 檔", type="primary", disabled=not picked):
         with tempfile.TemporaryDirectory() as td:
