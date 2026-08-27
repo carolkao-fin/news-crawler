@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import sys
 import tempfile
@@ -259,11 +258,6 @@ if articles:
         else:
             st.caption("此環境未安裝 Word，僅提供 .docx；用 Word 開啟後另存新檔即可轉成 .doc。"
                        "目錄頁碼會在 Word 開檔時自動更新（或按 Ctrl+A 後 F9）。")
-
-    st.download_button(
-        "⬇️ 下載原始資料（JSON）",
-        json.dumps([a.to_dict() for a in picked], ensure_ascii=False, indent=2),
-        file_name=fname_base + ".json", mime="application/json")
 
 else:
     st.markdown(
