@@ -194,6 +194,20 @@ with st.sidebar:
                                "technews.tw": "科技新報",
                                "cna.com.tw": "中央社"}.get(d, d),
         help="這些來源會額外做一次定向檢索，並在排序時加權；其他媒體仍照常蒐集。")
+    _all_domains = sorted(_crawler.DOMAIN_SOURCE.keys())
+    listed = st.multiselect(
+        "新聞來源白名單",
+        options=_all_domains,
+        default=_all_domains,
+        format_func=lambda d: "%s (%s)" % (_crawler.DOMAIN_SOURCE.get(d, d), d),
+        key=wkey("listed"),
+        help="只顯示這些網站的新聞。取消勾選即排除該來源；全部取消則等同不過濾（顯示所有來源）。")
+    search_engine = st.radio(
+        "搜尋引擎",
+        options=["ddg", "gnews"],
+        format_func=lambda x: "DuckDuckGo（建議）" if x == "ddg" else "Google News RSS",
+        index=0, key=wkey("engine"), horizontal=True,
+        help="DDG 直接回傳原始網址，不需處理 Google 轉址；無法連線時自動退回 Google News RSS。")
     topic_boost = st.slider("關注議題加權（天）", 0, 365, 120, 15,
                             key=wkey("topic_boost"),
                             help="命中關注議題的新聞會往前排，最多計兩項。這是加權"
@@ -257,6 +271,8 @@ if run:
             other_quota_ratio=float(other_quota),
             priority_domains=prio,
             priority_boost_days={1: int(boost), 2: int(boost) // 3, 3: 0},
+            listed_domains=listed or None,
+            search_engine=search_engine,
             progress=_cb, delay=float(delay))
     bar.empty()
     st.session_state.articles = arts

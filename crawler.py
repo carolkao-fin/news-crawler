@@ -32,6 +32,12 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    from duckduckgo_search import DDGS as _DDGS
+    _HAS_DDGS = True
+except ImportError:
+    _HAS_DDGS = False
+
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 HEADERS = {"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
@@ -355,6 +361,9 @@ DOMAIN_SOURCE = {
     "tpex.org.tw": "證券櫃檯買賣中心",
 }
 
+# 列管新聞網域白名單預設值（包含 DOMAIN_SOURCE 的所有網域）
+LISTED_DOMAINS: set = set(DOMAIN_SOURCE.keys())
+
 # 第一優先來源：定向補搜，並在排序時優先納入
 PRIORITY_DOMAINS = ["money.udn.com", "ctee.com.tw", "news.cnyes.com"]
 PRIORITY_NAMES = ["經濟日報", "工商時報", "鉅亨網", "公司官網"]
@@ -460,6 +469,69 @@ def search_google_news(keywords: List[str], since: datetime, until: datetime,
                            source=src, published=pub,
                            origin="google-site" if site else "google"))
     return out
+
+
+def search_ddg_news(keywords: List[str], since: datetime, until: datetime,
+                    fetcher: Optional[Fetcher] = None,
+                    site: str = "",
+                    topics: Optional[Iterable[str]] = None,
+                    listed_domains: Optional[set] = None,
+                    max_results: int = 40) -> List[Article]:
+    """以 DuckDuckGo News 搜尋，可限定來源網域白名單。
+
+    listed_domains=None  不限制（接受任何來源）
+    listed_domains={...} 只保留網域符合集合的結果
+    DDG 無法使用時回傳空清單，由呼叫端退回 Google News RSS。
+    """
+    if not _HAS_DDGS:
+        return []
+    f = fetcher or Fetcher()
+    core = " OR ".join(
+        '"%s"' % k if (len(k) > 1 and " " not in k) else k
+        for k in keywords[:4]
+    )
+    tl_list = [t for t in (topics or []) if t]
+    if tl_list:
+        core = "(%s) (%s)" % (core, " OR ".join(tl_list[:5]))
+    q = ("site:%s " % site + core) if site else core
+
+    days = (until - since).days
+    tl: Optional[str] = (
+        "w" if days <= 7 else "m" if days <= 31 else
+        "y" if days <= 365 else None
+    )
+
+    arts: List[Article] = []
+    try:
+        time.sleep(f.delay)
+        with _DDGS() as ddgs:
+            for r in ddgs.news(keywords=q, max_results=max_results, timelimit=tl) or []:
+                url = r.get("url", "")
+                if not url:
+                    continue
+                host = urllib.parse.urlparse(url).netloc.lower()
+                if listed_domains:
+                    if not any(host.endswith(ld) or ld in host for ld in listed_domains):
+                        continue
+                pub: Optional[datetime] = None
+                try:
+                    raw = r.get("date", "")
+                    if raw:
+                        pub = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                        pub = pub.astimezone(TPE).replace(tzinfo=None)
+                except Exception:
+                    pass
+                if pub and not (since <= pub <= until):
+                    continue
+                src = normalize_source(url, r.get("source", ""))
+                arts.append(Article(
+                    title=clean_title(r.get("title", ""), src),
+                    url=url, source=src, published=pub,
+                    origin="ddg-site" if site else "ddg",
+                ))
+    except Exception:      # noqa: BLE001
+        pass
+    return arts
 
 
 def resolve_google_url(gnews_url: str, fetcher: Optional[Fetcher] = None) -> str:
@@ -1072,6 +1144,8 @@ def collect_news(company: str,
                  other_quota_ratio: float = 0.25,
                  min_chars: int = 80,
                  progress: Optional[Callable[[str, float], None]] = None,
+                 listed_domains: Optional[Iterable[str]] = None,
+                 search_engine: str = "ddg",
                  delay: float = 0.8) -> tuple[List[Article], List[str]]:
     """蒐集某公司近 N 年新聞。回傳 (成功清單, 使用的關鍵字)。
 
@@ -1096,10 +1170,35 @@ def collect_news(company: str,
     doms = list(priority_domains) if priority_domains is not None else list(PRIORITY_DOMAINS)
     boost = priority_boost_days or TIER_BOOST_DAYS
     f = Fetcher(delay=delay)
+    _listed: Optional[set] = (
+        set(listed_domains) if listed_domains is not None else LISTED_DOMAINS
+    )
+    _use_ddg = search_engine == "ddg" and _HAS_DDGS
 
     def say(msg: str, pct: float) -> None:
         if progress:
             progress(msg, pct)
+
+    def _search(kws: List[str], entity: str, pct: float,
+                site: str = "",
+                topics: Optional[Iterable[str]] = None) -> List[Article]:
+        """統一搜尋入口：優先 DDG，不可用時退回 Google News RSS。"""
+        arts: List[Article] = []
+        if _use_ddg:
+            try:
+                arts = _tag(search_ddg_news(kws, since, until, f,
+                                            site=site, topics=topics,
+                                            listed_domains=_listed), entity)
+                if arts:
+                    return arts
+            except Exception as exc:  # noqa: BLE001
+                say("DDG 搜尋失敗，改用 Google News：%s" % exc, pct)
+        try:
+            arts = _tag(search_google_news(kws, since, until, f,
+                                           site=site, topics=topics), entity)
+        except Exception as exc:  # noqa: BLE001
+            say("Google News 搜尋失敗：%s" % exc, pct)
+        return arts
 
     found: List[Article] = []
 
@@ -1110,19 +1209,14 @@ def collect_news(company: str,
         if rc:
             entities.append((rc, make_keywords(rc)))
 
-    say("以關鍵字檢索 Google News：%s" % "、".join(keywords), 0.03)
-    try:
-        found += _tag(search_google_news(keywords, since, until, f), company)
-    except Exception as e:      # noqa: BLE001
-        say("Google News 檢索失敗：%s" % e, 0.04)
+    say("以關鍵字搜尋新聞（%s）：%s" % (
+        "DDG" if _use_ddg else "Google News", "、".join(keywords)), 0.03)
+    found += _search(keywords, company, 0.04)
 
     # 母公司與相關企業
     for n, (name, kws) in enumerate(entities[1:]):
         say("檢索關聯企業：%s" % name, 0.05 + 0.01 * n)
-        try:
-            found += _tag(search_google_news(kws, since, until, f), name)
-        except Exception:      # noqa: BLE001
-            pass
+        found += _search(kws, name, 0.05 + 0.01 * n)
 
     # 議題定向檢索：每一家對象 × 兩組主題詞
     for n, (name, kws) in enumerate(entities):
@@ -1130,21 +1224,17 @@ def collect_news(company: str,
         for gi, group in enumerate(TOPIC_QUERY_GROUPS):
             say("檢索 %s 的關注議題（%d/%d）" % (name, gi + 1, len(TOPIC_QUERY_GROUPS)),
                 0.07 + 0.01 * (n * len(TOPIC_QUERY_GROUPS) + gi))
-            try:
-                found += _tag(search_google_news(
-                    [core], since, until, f, topics=group), name)
-            except Exception:      # noqa: BLE001
-                pass
+            found += _search([core], name,
+                             0.07 + 0.01 * (n * len(TOPIC_QUERY_GROUPS) + gi),
+                             topics=group)
 
-    # 第一優先來源定向補搜
+    # 第一優先來源定向補搜（只對白名單內的網域執行）
     for n, dom in enumerate(doms):
+        if _listed and dom not in _listed:
+            continue
         name = DOMAIN_SOURCE.get(dom, dom)
         say("定向檢索 %s…" % name, 0.12 + 0.01 * n)
-        try:
-            found += _tag(search_google_news(keywords, since, until, f, site=dom),
-                          company)
-        except Exception:      # noqa: BLE001
-            pass
+        found += _search(keywords, company, 0.12 + 0.01 * n, site=dom)
 
     if use_cnyes:
         say("檢索鉅亨網…", 0.14)
@@ -1200,6 +1290,16 @@ def collect_news(company: str,
         cand.append(a)
 
     cand = _dedup(cand)
+
+    # 網域白名單過濾（官網與鉅亨 API 直接納入，其餘依白名單決定）
+    if _listed:
+        def _in_listed(a: Article) -> bool:
+            if a.origin in ("official", "cnyes"):
+                return True
+            host = urllib.parse.urlparse(a.url or "").netloc.lower()
+            return any(host.endswith(ld) or ld in host for ld in _listed)
+        cand = [a for a in cand if _in_listed(a)]
+
     # 排序：不限來源，但第一／第二優先來源享有新鮮度加權，因此同期新聞會排在前面
     cand.sort(key=lambda x: rank_score(x, until, official_hosts, boost,
                                        topic_boost_days))
